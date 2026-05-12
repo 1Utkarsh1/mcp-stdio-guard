@@ -1,0 +1,43 @@
+{
+  "name": "mcp-stdio-guard",
+  "version": "0.1.0",
+  "description": "A zero-dependency CLI that catches stdout pollution and handshake failures in MCP stdio servers.",
+  "type": "module",
+  "bin": {
+    "mcp-stdio-guard": "./bin/mcp-stdio-guard.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "json-rpc",
+    "stdio",
+    "claude",
+    "cursor",
+    "cli",
+    "developer-tools",
+    "debugging"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1Utkarsh1/mcp-stdio-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/1Utkarsh1/mcp-stdio-guard/issues"
+  },
+  "homepage": "https://github.com/1Utkarsh1/mcp-stdio-guard#readme",
+  "engines": {
+    "node": ">=18"
+  }
+}
