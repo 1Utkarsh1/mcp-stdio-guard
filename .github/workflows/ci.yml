@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
       - run: npm test
       - run: npm run pack:dry
 
@@ -34,6 +36,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
       - run: npm test
       - run: npm publish --provenance --access public
         env:

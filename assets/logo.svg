@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">mcp-stdio-guard logo</title>
+  <desc id="desc">A shield containing a terminal prompt and JSON braces.</desc>
+  <defs>
+    <linearGradient id="shield" x1="42" y1="28" x2="214" y2="226" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B6BCB"/>
+      <stop offset="1" stop-color="#1F8F4C"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#0F172A" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#F8FAFC"/>
+  <path d="M128 28l78 30v60c0 50-30 86-78 110-48-24-78-60-78-110V58l78-30z" fill="url(#shield)" filter="url(#shadow)"/>
+  <rect x="70" y="82" width="116" height="82" rx="14" fill="#0F172A"/>
+  <circle cx="91" cy="104" r="5" fill="#EF4444"/>
+  <circle cx="108" cy="104" r="5" fill="#F59E0B"/>
+  <circle cx="125" cy="104" r="5" fill="#22C55E"/>
+  <path d="M91 131l18 13-18 13" fill="none" stroke="#93C5FD" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M127 157h38" fill="none" stroke="#ECFDF5" stroke-width="8" stroke-linecap="round"/>
+  <path d="M93 190c18 12 52 12 70 0" fill="none" stroke="#0F172A" stroke-width="10" stroke-linecap="round" opacity="0.22"/>
+</svg>

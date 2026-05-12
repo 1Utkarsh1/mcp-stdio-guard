@@ -1,29 +1,54 @@
-# mcp-stdio-guard
+<p align="center">
+  <img src="assets/logo.svg" alt="mcp-stdio-guard logo" width="120" />
+</p>
 
-`mcp-stdio-guard` catches the easiest way to break a Model Context Protocol server: writing anything except JSON-RPC messages to stdout.
+<h1 align="center">mcp-stdio-guard</h1>
 
-MCP stdio servers use stdout as their protocol channel. Debug text, banners, progress logs, `console.log`, Python `print`, or any other stray stdout output can corrupt the stream and make clients fail in confusing ways. This CLI starts your server, performs a real MCP initialize handshake, validates every stdout frame, and optionally scans source for risky stdout calls.
+<p align="center">
+  Catch stdout pollution and handshake failures in MCP stdio servers before clients do.
+</p>
 
-## Why this exists
+<p align="center">
+  <a href="https://github.com/1Utkarsh1/mcp-stdio-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/1Utkarsh1/mcp-stdio-guard/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://www.npmjs.com/package/mcp-stdio-guard"><img alt="npm" src="https://img.shields.io/npm/v/mcp-stdio-guard?color=0b6bcb" /></a>
+  <img alt="runtime dependencies" src="https://img.shields.io/badge/runtime%20deps-0-1f8f4c" />
+  <img alt="node" src="https://img.shields.io/badge/node-%3E%3D18-2f855a" />
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-111827" /></a>
+</p>
 
-MCP is becoming normal developer infrastructure, but the local stdio path is fragile: logs must go to stderr, and stdout must stay machine-readable. The latest MCP docs say [stdio servers must send JSON-RPC messages on stdout](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), may log to stderr, and must complete the [`initialize` then `notifications/initialized` lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) before normal operation.
+<p align="center">
+  <img src="assets/hero.svg" alt="mcp-stdio-guard hero showing a clean MCP stdio pipeline" width="100%" />
+</p>
 
-This tiny guard is meant for MCP server authors who want a fast local check and a CI gate before publishing.
+MCP stdio servers use stdout as their protocol channel. Debug text, banners, progress logs, `console.log`, Python `print`, or any other stray stdout output can corrupt the stream and make clients fail in confusing ways.
+
+`mcp-stdio-guard` starts your server, performs a real MCP initialize handshake, optionally sends a real post-initialize MCP request such as `tools/list`, validates every stdout frame, and scans source for risky stdout calls.
+
+## Why This Exists
+
+The latest MCP docs say [stdio servers must send JSON-RPC messages on stdout](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), may log to stderr, and must complete the [`initialize` then `notifications/initialized` lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) before normal operation.
+
+That is easy to get wrong in real servers. This guard turns that fragile process boundary into a fast local check and a CI gate.
+
+<p align="center">
+  <img src="assets/protocol-flow.svg" alt="Protocol flow tested by mcp-stdio-guard" width="100%" />
+</p>
 
 ## Install
+
+From npm:
+
+```bash
+npx mcp-stdio-guard -- node ./server.js
+```
 
 From this repo:
 
 ```bash
 git clone https://github.com/1Utkarsh1/mcp-stdio-guard.git
 cd mcp-stdio-guard
+npm ci
 npm test
-```
-
-After npm publish:
-
-```bash
-npx mcp-stdio-guard -- node ./server.js
 ```
 
 ## Quickstart
@@ -31,54 +56,55 @@ npx mcp-stdio-guard -- node ./server.js
 Run your MCP server behind the guard:
 
 ```bash
-node ./bin/mcp-stdio-guard.js -- node ./server.js
+mcp-stdio-guard -- node ./server.js
 ```
 
-Use a custom timeout and protocol version:
+Exercise a real MCP operation after initialization:
 
 ```bash
-node ./bin/mcp-stdio-guard.js --timeout 8000 --protocol 2025-11-25 -- node ./server.js
+mcp-stdio-guard --request tools/list -- node ./server.js
 ```
 
 Scan source for obvious stdout writes too:
 
 ```bash
-node ./bin/mcp-stdio-guard.js --scan src -- node ./server.js
+mcp-stdio-guard --scan src --fail-on-static --request tools/list -- node ./server.js
 ```
 
 JSON output for CI:
 
 ```bash
-node ./bin/mcp-stdio-guard.js --json -- node ./server.js
+mcp-stdio-guard --json --request tools/list -- node ./server.js
 ```
 
-## What it checks
+## What It Catches
 
-- starts the command you provide after `--`
-- sends an MCP `initialize` request
-- validates stdout as newline-delimited JSON-RPC
-- fails on non-JSON stdout pollution
-- detects crashes and initialize timeouts
-- keeps stderr as allowed diagnostic output
-- optionally scans source for `console.log`, `print`, `fmt.Println`, `println!`, and `System.out`
+<p align="center">
+  <img src="assets/terminal-demo.svg" alt="Passing and failing terminal output examples" width="100%" />
+</p>
 
-## Output
+| Problem | Runtime check | Static scan |
+| --- | --- | --- |
+| `console.log("starting")` before server startup | Yes | Yes |
+| Python `print("debug")` in a stdio server | Yes | Yes |
+| Late stdout logs after `initialize` | Yes | Partial |
+| Invalid JSON-RPC frames | Yes | No |
+| Server crash after `notifications/initialized` | Yes | No |
+| Missing `initialize` or operation response | Yes | No |
+| stderr diagnostics | Allowed | Allowed |
 
-Passing server:
+## Live MCP Coverage
 
-```text
-PASS MCP stdio guard
-initialize: ok
-frames: 1 stdout / 0 invalid
-stderr: 0 lines
-```
+The test suite creates real servers with `@modelcontextprotocol/sdk@1.29.0` and verifies:
 
-Polluted stdout:
-
-```text
-FAIL MCP stdio guard
-[error] stdout-non-json: stdout line 1 is not JSON-RPC: "server starting..."
-```
+| Scenario | Expected result |
+| --- | --- |
+| clean SDK stdio server through `initialize` and `tools/list` | Pass |
+| SDK server with startup stdout pollution | Fail |
+| SDK server with stderr diagnostics | Pass |
+| SDK server with late stdout pollution after connection | Fail |
+| hand-rolled server that ignores post-initialize requests | Fail |
+| server that crashes after initialized notification | Fail |
 
 ## Commands
 
@@ -89,21 +115,54 @@ mcp-stdio-guard [options] -- <command> [args...]
 | Option | Description |
 | --- | --- |
 | `--protocol <version>` | MCP protocol version to send, default `2025-11-25` |
-| `--timeout <ms>` | initialize timeout, default `5000` |
-| `--scan <path>` | statically scan a source directory for risky stdout writes |
+| `--timeout <ms>` | initialize and request timeout, default `5000` |
+| `--request <method>` | send one MCP request after initialization, for example `tools/list` |
+| `--params <json>` | JSON params for `--request` |
+| `--scan <path>` | scan source for risky stdout writes |
 | `--fail-on-static` | make static scan findings fail the command |
 | `--json` | print machine-readable output |
-| `--help` | Show help |
+| `--cwd <path>` | run the server command from a specific directory |
+| `--help` | show help |
 
-## CI example
+## CI
 
 ```yaml
-- run: npx mcp-stdio-guard --scan src --fail-on-static -- node ./server.js
+- run: npm ci
+- run: npx mcp-stdio-guard --scan src --fail-on-static --request tools/list -- node ./server.js
 ```
 
-## Notes
+## Output
 
-Static scanning is intentionally simple and conservative. The runtime guard is the source of truth because it tests the real process boundary your MCP client will use.
+Passing server:
+
+```text
+PASS MCP stdio guard
+initialize: ok
+frames: 2 stdout / 0 invalid
+stderr: 0 lines
+protocol: 2025-11-25
+request: tools/list responded
+```
+
+Polluted stdout:
+
+```text
+FAIL MCP stdio guard
+initialize: ok
+frames: 2 stdout / 1 invalid
+stderr: 0 lines
+protocol: 2025-11-25
+request: tools/list responded
+[error] stdout-non-json: stdout line 1 is not JSON-RPC: "server starting..."
+```
+
+## Design
+
+- Runtime dependencies: zero.
+- Default behavior: validate the real process boundary.
+- Optional static scan: intentionally simple and conservative.
+- CI posture: fail on protocol corruption, crashes, and missing responses.
+- Promotion promise: no fake stars, no spam, just a tool that catches a real MCP failure mode.
 
 ## License
 

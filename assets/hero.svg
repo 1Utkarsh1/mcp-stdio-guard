@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">mcp-stdio-guard hero</title>
+  <desc id="desc">A visual showing the guard protecting an MCP stdio JSON-RPC stream.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#E8F5EE"/>
+    </linearGradient>
+    <linearGradient id="pipe" x1="190" y1="272" x2="1010" y2="272" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B6BCB"/>
+      <stop offset="1" stop-color="#1F8F4C"/>
+    </linearGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#0F172A" flood-opacity="0.14"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="520" rx="36" fill="url(#bg)"/>
+  <rect x="64" y="56" width="1072" height="408" rx="28" fill="#FFFFFF" filter="url(#soft)"/>
+  <text x="104" y="132" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="56" font-weight="800">Guard your MCP stdio stream</text>
+  <text x="106" y="178" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="25" font-weight="500">Initialize, validate JSON-RPC, run a real request, and catch noisy stdout before users do.</text>
+  <rect x="114" y="248" width="210" height="94" rx="18" fill="#EFF6FF" stroke="#BFDBFE"/>
+  <text x="142" y="286" fill="#0B6BCB" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">Your server</text>
+  <text x="142" y="318" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="18">node ./server.js</text>
+  <path d="M340 295h170" stroke="url(#pipe)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M490 276l30 19-30 19z" fill="#1F8F4C"/>
+  <rect x="522" y="226" width="250" height="138" rx="22" fill="#0F172A"/>
+  <text x="556" y="272" fill="#ECFDF5" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="800">stdio guard</text>
+  <text x="556" y="308" fill="#93C5FD" font-family="Inter, Arial, sans-serif" font-size="18">stdout must be JSON-RPC</text>
+  <text x="556" y="336" fill="#86EFAC" font-family="Inter, Arial, sans-serif" font-size="18">stderr is safe for logs</text>
+  <path d="M788 295h170" stroke="url(#pipe)" stroke-width="12" stroke-linecap="round"/>
+  <path d="M938 276l30 19-30 19z" fill="#1F8F4C"/>
+  <rect x="982" y="248" width="104" height="94" rx="18" fill="#ECFDF5" stroke="#BBF7D0"/>
+  <text x="1012" y="286" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800">PASS</text>
+  <text x="1005" y="318" fill="#334155" font-family="Inter, Arial, sans-serif" font-size="18">or fail fast</text>
+  <rect x="104" y="390" width="242" height="38" rx="19" fill="#DBEAFE"/>
+  <text x="128" y="416" fill="#1E3A8A" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">real MCP SDK tested</text>
+  <rect x="362" y="390" width="204" height="38" rx="19" fill="#DCFCE7"/>
+  <text x="386" y="416" fill="#166534" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">zero runtime deps</text>
+  <rect x="582" y="390" width="250" height="38" rx="19" fill="#FEF3C7"/>
+  <text x="606" y="416" fill="#92400E" font-family="Inter, Arial, sans-serif" font-size="18" font-weight="700">CI-ready failure modes</text>
+</svg>

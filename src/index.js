@@ -26,7 +26,13 @@ export async function runCli(argv) {
   const result = await guardStdioServer(options.command, {
     protocol: options.protocol,
     timeoutMs: options.timeoutMs,
-    cwd: options.cwd
+    cwd: options.cwd,
+    operation: options.requestMethod
+      ? {
+          method: options.requestMethod,
+          params: options.requestParams
+        }
+      : null
   });
 
   if (options.scanPath) {
@@ -62,6 +68,8 @@ export function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT,
     scanPath: '',
     failOnStatic: false,
+    requestMethod: '',
+    requestParams: undefined,
     json: false,
     help: false,
     version: false,
@@ -84,6 +92,12 @@ export function parseArgs(argv) {
       options.json = true;
     } else if (arg === '--fail-on-static') {
       options.failOnStatic = true;
+    } else if (arg === '--request') {
+      options.requestMethod = readOptionValue(argv, index, arg);
+      index += 1;
+    } else if (arg === '--params') {
+      options.requestParams = parseJsonOption(readOptionValue(argv, index, arg), arg);
+      index += 1;
     } else if (arg === '--protocol') {
       options.protocol = readOptionValue(argv, index, arg);
       index += 1;
@@ -105,6 +119,10 @@ export function parseArgs(argv) {
     throw new Error('--timeout must be an integer >= 100');
   }
 
+  if (options.requestParams !== undefined && !options.requestMethod) {
+    throw new Error('--params can only be used with --request');
+  }
+
   return options;
 }
 
@@ -114,12 +132,14 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   const args = commandWithArgs.slice(1);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT;
   const protocol = options.protocol ?? DEFAULT_PROTOCOL;
+  const operation = options.operation || null;
   const issues = [];
   const frames = [];
   const stderrChunks = [];
   let stdoutBuffer = '';
   let initialized = false;
   let endedByGuard = false;
+  let timer;
   let child;
 
   const result = {
@@ -128,6 +148,13 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     protocol,
     negotiatedProtocol: '',
     initialized: false,
+    operation: operation
+      ? {
+          method: operation.method,
+          responded: false,
+          error: null
+        }
+      : null,
     frames,
     issues,
     stderr: '',
@@ -140,8 +167,22 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       issues.push({ severity, code, message });
     }
 
+    function armTimeout(code, message) {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        addIssue('error', code, message);
+        finish();
+      }, timeoutMs);
+    }
+
+    function finishSoon() {
+      clearTimeout(timer);
+      setTimeout(finish, 50);
+    }
+
     function finish() {
       if (result.durationMs) return;
+      clearTimeout(timer);
       result.durationMs = Date.now() - startedAt;
       result.stderr = Buffer.concat(stderrChunks).toString('utf8');
       result.initialized = initialized;
@@ -163,13 +204,10 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
-    const timeout = setTimeout(() => {
-      addIssue('error', 'initialize-timeout', `no initialize response within ${timeoutMs}ms`);
-      finish();
-    }, timeoutMs);
+    armTimeout('initialize-timeout', `no initialize response within ${timeoutMs}ms`);
 
     child.on('error', (error) => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       addIssue('error', 'spawn-failed', error.message);
       finish();
     });
@@ -188,9 +226,12 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     });
 
     child.on('exit', (code, signal) => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       if (stdoutBuffer.trim()) {
         addIssue('error', 'stdout-without-newline', `stdout ended with an incomplete JSON-RPC frame: ${quote(stdoutBuffer)}`);
+      }
+      if (!endedByGuard && initialized && result.operation && !result.operation.responded) {
+        addIssue('error', 'operation-missing-response', `${result.operation.method} did not receive a response before server exit`);
       }
       if (!endedByGuard && initialized && code && code !== 0) {
         addIssue('error', 'server-crashed', `server exited after initialize (code ${code}, signal ${signal ?? 'null'})`);
@@ -238,7 +279,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       frames.push(message);
 
       if (message.id === 1) {
-        clearTimeout(timeout);
+        clearTimeout(timer);
         if (message.error) {
           addIssue('error', 'initialize-error', `initialize returned error: ${message.error.message || JSON.stringify(message.error)}`);
           finish();
@@ -248,7 +289,28 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         initialized = true;
         result.negotiatedProtocol = message.result?.protocolVersion || '';
         send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-        setTimeout(finish, 50);
+        if (operation) {
+          const request = {
+            jsonrpc: '2.0',
+            id: 2,
+            method: operation.method
+          };
+          if (operation.params !== undefined) {
+            request.params = operation.params;
+          }
+          send(request);
+          armTimeout('operation-timeout', `no ${operation.method} response within ${timeoutMs}ms`);
+        } else {
+          finishSoon();
+        }
+      } else if (operation && message.id === 2) {
+        clearTimeout(timer);
+        result.operation.responded = true;
+        if (message.error) {
+          result.operation.error = message.error;
+          addIssue('warning', 'operation-error', `${operation.method} returned error: ${message.error.message || JSON.stringify(message.error)}`);
+        }
+        finishSoon();
       }
     }
   });
@@ -366,6 +428,11 @@ function formatTextResult(result) {
     lines.push(`protocol: ${result.negotiatedProtocol}`);
   }
 
+  if (result.operation) {
+    const state = result.operation.responded ? 'responded' : 'missing';
+    lines.push(`request: ${result.operation.method} ${state}`);
+  }
+
   if (result.staticFindings.length) {
     lines.push(`static findings: ${result.staticFindings.length}`);
     for (const finding of result.staticFindings.slice(0, 10)) {
@@ -388,6 +455,14 @@ function readOptionValue(argv, index, option) {
   return value;
 }
 
+function parseJsonOption(rawValue, option) {
+  try {
+    return JSON.parse(rawValue);
+  } catch (error) {
+    throw new Error(`${option} must be valid JSON: ${error.message}`);
+  }
+}
+
 function quote(value) {
   const singleLine = String(value).replace(/\s+/g, ' ').trim();
   return JSON.stringify(singleLine.length > 160 ? `${singleLine.slice(0, 157)}...` : singleLine);
@@ -401,9 +476,11 @@ Usage:
 
 Options:
   --protocol <version>   MCP protocol version, default ${DEFAULT_PROTOCOL}
-  --timeout <ms>         initialize timeout, default ${DEFAULT_TIMEOUT}
+  --timeout <ms>         initialize and request timeout, default ${DEFAULT_TIMEOUT}
   --scan <path>          scan source for risky stdout writes
   --fail-on-static       fail when --scan finds risky stdout writes
+  --request <method>     send one MCP request after initialize, e.g. tools/list
+  --params <json>        JSON params for --request
   --json                 print JSON output
   --cwd <path>           run command from this directory
   --version, -v          print version
@@ -411,6 +488,7 @@ Options:
 
 Examples:
   mcp-stdio-guard -- node ./server.js
-  mcp-stdio-guard --scan src --fail-on-static -- node ./server.js
+  mcp-stdio-guard --request tools/list -- node ./server.js
+  mcp-stdio-guard --scan src --fail-on-static --request tools/list -- node ./server.js
 `;
 }

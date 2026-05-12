@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">Terminal output examples</title>
+  <desc id="desc">Passing and failing terminal examples for mcp-stdio-guard.</desc>
+  <rect width="1200" height="560" rx="30" fill="#F8FAFC"/>
+  <text x="64" y="74" fill="#0F172A" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="800">Terminal artifacts</text>
+  <text x="64" y="114" fill="#475569" font-family="Inter, Arial, sans-serif" font-size="20">Readable locally, strict enough for CI.</text>
+  <rect x="64" y="154" width="520" height="326" rx="22" fill="#0B1220"/>
+  <rect x="64" y="154" width="520" height="46" rx="22" fill="#111827"/>
+  <circle cx="96" cy="177" r="7" fill="#EF4444"/>
+  <circle cx="120" cy="177" r="7" fill="#F59E0B"/>
+  <circle cx="144" cy="177" r="7" fill="#22C55E"/>
+  <text x="92" y="242" fill="#86EFAC" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">PASS MCP stdio guard</text>
+  <text x="92" y="284" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">initialize: ok</text>
+  <text x="92" y="322" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">frames: 2 stdout / 0 invalid</text>
+  <text x="92" y="360" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">stderr: 0 lines</text>
+  <text x="92" y="398" fill="#93C5FD" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">request: tools/list responded</text>
+  <rect x="616" y="154" width="520" height="326" rx="22" fill="#0B1220"/>
+  <rect x="616" y="154" width="520" height="46" rx="22" fill="#111827"/>
+  <circle cx="648" cy="177" r="7" fill="#EF4444"/>
+  <circle cx="672" cy="177" r="7" fill="#F59E0B"/>
+  <circle cx="696" cy="177" r="7" fill="#22C55E"/>
+  <text x="644" y="242" fill="#FCA5A5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="700">FAIL MCP stdio guard</text>
+  <text x="644" y="284" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">initialize: ok</text>
+  <text x="644" y="322" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">frames: 2 stdout / 1 invalid</text>
+  <text x="644" y="360" fill="#E2E8F0" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="19">request: tools/list responded</text>
+  <text x="644" y="398" fill="#FCA5A5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">[error] stdout-non-json:</text>
+  <text x="644" y="430" fill="#FCA5A5" font-family="SFMono-Regular, Menlo, Consolas, monospace" font-size="17">"server starting..."</text>
+</svg>

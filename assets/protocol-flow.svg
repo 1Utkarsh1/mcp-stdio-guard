@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">MCP protocol flow</title>
+  <desc id="desc">The sequence mcp-stdio-guard verifies: spawn, initialize, initialized notification, optional request, validated stdout.</desc>
+  <rect width="1200" height="430" rx="30" fill="#0F172A"/>
+  <text x="64" y="76" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="36" font-weight="800">Verified MCP stdio flow</text>
+  <text x="64" y="116" fill="#CBD5E1" font-family="Inter, Arial, sans-serif" font-size="20">Every box is a real process-boundary check, not a README-only promise.</text>
+  <g font-family="Inter, Arial, sans-serif">
+    <rect x="72" y="178" width="176" height="112" rx="18" fill="#1E293B" stroke="#334155"/>
+    <text x="104" y="222" fill="#93C5FD" font-size="20" font-weight="800">1. spawn</text>
+    <text x="104" y="254" fill="#E2E8F0" font-size="17">run command</text>
+    <text x="104" y="278" fill="#94A3B8" font-size="15">after --</text>
+    <path d="M264 234h74" stroke="#38BDF8" stroke-width="8" stroke-linecap="round"/>
+    <path d="M326 219l24 15-24 15z" fill="#38BDF8"/>
+    <rect x="354" y="178" width="176" height="112" rx="18" fill="#1E293B" stroke="#334155"/>
+    <text x="386" y="222" fill="#93C5FD" font-size="20" font-weight="800">2. initialize</text>
+    <text x="386" y="254" fill="#E2E8F0" font-size="17">JSON-RPC id 1</text>
+    <text x="386" y="278" fill="#94A3B8" font-size="15">timeout guarded</text>
+    <path d="M546 234h74" stroke="#38BDF8" stroke-width="8" stroke-linecap="round"/>
+    <path d="M608 219l24 15-24 15z" fill="#38BDF8"/>
+    <rect x="636" y="178" width="176" height="112" rx="18" fill="#1E293B" stroke="#334155"/>
+    <text x="668" y="222" fill="#86EFAC" font-size="20" font-weight="800">3. initialized</text>
+    <text x="668" y="254" fill="#E2E8F0" font-size="17">notification</text>
+    <text x="668" y="278" fill="#94A3B8" font-size="15">server must survive</text>
+    <path d="M828 234h74" stroke="#38BDF8" stroke-width="8" stroke-linecap="round"/>
+    <path d="M890 219l24 15-24 15z" fill="#38BDF8"/>
+    <rect x="918" y="178" width="210" height="112" rx="18" fill="#1E293B" stroke="#334155"/>
+    <text x="950" y="222" fill="#FBBF24" font-size="20" font-weight="800">4. request</text>
+    <text x="950" y="254" fill="#E2E8F0" font-size="17">tools/list or custom</text>
+    <text x="950" y="278" fill="#94A3B8" font-size="15">valid stdout only</text>
+  </g>
+  <rect x="72" y="334" width="1056" height="44" rx="22" fill="#111827" stroke="#334155"/>
+  <text x="104" y="363" fill="#E2E8F0" font-family="Inter, Arial, sans-serif" font-size="18">If stdout is not newline-delimited JSON-RPC at any point, the guard fails the run.</text>
+</svg>
