@@ -4,7 +4,7 @@
   "description": "A runtime zero-dependency CLI that catches stdout pollution and handshake failures in MCP stdio servers.",
   "type": "module",
   "bin": {
-    "mcp-stdio-guard": "./bin/mcp-stdio-guard.js"
+    "mcp-stdio-guard": "bin/mcp-stdio-guard.js"
   },
   "files": [
     "assets",
