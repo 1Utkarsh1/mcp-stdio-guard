@@ -24,7 +24,7 @@ jobs:
       - run: npm run pack:dry
 
   publish:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && vars.NPM_PUBLISH_ENABLED == 'true'
     needs: test
     runs-on: ubuntu-latest
     permissions:
