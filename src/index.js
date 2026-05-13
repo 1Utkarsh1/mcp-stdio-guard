@@ -2,9 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
+function loadVersion() {
+  try {
+    const packageJsonPath = path.resolve(import.meta.dirname, '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    return typeof packageJson.version === 'string' ? packageJson.version : '0.2.0';
+  } catch {
+    return '0.2.0';
+  }
+}
+
 const DEFAULT_PROTOCOL = '2025-11-25';
 const DEFAULT_TIMEOUT = 5000;
-const VERSION = '0.1.0';
+const VERSION = loadVersion();
 const JSON_SCHEMA_VERSION = 1;
 
 const STDOUT_ISSUE_CODES = new Set([
