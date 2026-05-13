@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { detectPythonBufferingIssue, guardStdioServer, parseArgs, scanSource, validateJsonRpc } from '../src/index.js';
+import {
+  detectPythonBufferingIssue,
+  guardRepeatedStdioServer,
+  guardStdioServer,
+  parseArgs,
+  scanSource,
+  validateJsonRpc
+} from '../src/index.js';
 
 test('accepts a clean MCP initialize response', async () => {
   const server = makeServer(`
@@ -107,6 +114,39 @@ test('detects Python unbuffered settings', () => {
   assert.equal(detectPythonBufferingIssue(['python', '-u', 'server.py'], {}), '');
   assert.equal(detectPythonBufferingIssue(['python', 'server.py'], { PYTHONUNBUFFERED: '1' }), '');
   assert.equal(detectPythonBufferingIssue(['node', 'server.js'], {}), '');
+});
+
+test('can repeat runs and identify the failing run', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-repeat-'));
+  const marker = path.join(root, 'warm-cache');
+  const server = makeServer(`
+    import fs from 'node:fs';
+    const marker = process.argv[2];
+    if (!fs.existsSync(marker)) {
+      fs.writeFileSync(marker, 'warm');
+      console.log('building cache on first run');
+    }
+
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: {} } }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardRepeatedStdioServer([process.execPath, server, marker], {
+    repeat: 2,
+    timeoutMs: 1000
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.repeat, 2);
+  assert.equal(result.runs.length, 2);
+  assert.equal(result.runs[0].ok, false);
+  assert.equal(result.runs[1].ok, true);
+  assert.ok(result.issues.some((issue) => issue.run === 1 && issue.code === 'stdout-non-json'));
 });
 
 test('reports initialize timeout', async () => {
@@ -244,6 +284,8 @@ test('parses command after separator', () => {
   const options = parseArgs([
     '--timeout',
     '9000',
+    '--repeat',
+    '2',
     '--scan',
     'src',
     '--fail-on-static',
@@ -257,6 +299,7 @@ test('parses command after separator', () => {
   ]);
 
   assert.equal(options.timeoutMs, 9000);
+  assert.equal(options.repeat, 2);
   assert.equal(options.failOnStatic, true);
   assert.equal(options.requestMethod, 'tools/call');
   assert.deepEqual(options.requestParams, { name: 'echo', arguments: {} });

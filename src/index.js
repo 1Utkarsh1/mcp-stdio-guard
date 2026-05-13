@@ -23,7 +23,7 @@ export async function runCli(argv) {
     throw new Error('Missing command. Use: mcp-stdio-guard -- <command> [args...]');
   }
 
-  const result = await guardStdioServer(options.command, {
+  const guardOptions = {
     protocol: options.protocol,
     timeoutMs: options.timeoutMs,
     cwd: options.cwd,
@@ -33,7 +33,11 @@ export async function runCli(argv) {
           params: options.requestParams
         }
       : null
-  });
+  };
+
+  const result = options.repeat > 1
+    ? await guardRepeatedStdioServer(options.command, { ...guardOptions, repeat: options.repeat })
+    : await guardStdioServer(options.command, guardOptions);
 
   if (options.scanPath) {
     result.staticFindings = scanSource(options.scanPath);
@@ -70,6 +74,7 @@ export function parseArgs(argv) {
     failOnStatic: false,
     requestMethod: '',
     requestParams: undefined,
+    repeat: 1,
     json: false,
     help: false,
     version: false,
@@ -104,6 +109,9 @@ export function parseArgs(argv) {
     } else if (arg === '--timeout') {
       options.timeoutMs = Number(readOptionValue(argv, index, arg));
       index += 1;
+    } else if (arg === '--repeat') {
+      options.repeat = Number(readOptionValue(argv, index, arg));
+      index += 1;
     } else if (arg === '--scan') {
       options.scanPath = path.resolve(readOptionValue(argv, index, arg));
       index += 1;
@@ -119,11 +127,46 @@ export function parseArgs(argv) {
     throw new Error('--timeout must be an integer >= 100');
   }
 
+  if (!Number.isInteger(options.repeat) || options.repeat < 1) {
+    throw new Error('--repeat must be an integer >= 1');
+  }
+
   if (options.requestParams !== undefined && !options.requestMethod) {
     throw new Error('--params can only be used with --request');
   }
 
   return options;
+}
+
+export async function guardRepeatedStdioServer(commandWithArgs, options = {}) {
+  const startedAt = Date.now();
+  const repeat = options.repeat ?? 1;
+  const runs = [];
+  const issues = [];
+
+  if (!Number.isInteger(repeat) || repeat < 1) {
+    throw new Error('repeat must be an integer >= 1');
+  }
+
+  for (let index = 1; index <= repeat; index += 1) {
+    const run = await guardStdioServer(commandWithArgs, options);
+    run.run = index;
+    runs.push(run);
+    for (const issue of run.issues) {
+      issues.push({ run: index, ...issue });
+    }
+  }
+
+  return {
+    ok: !issues.some((issue) => issue.severity === 'error'),
+    command: commandWithArgs,
+    protocol: options.protocol ?? DEFAULT_PROTOCOL,
+    repeat,
+    runs,
+    issues,
+    staticFindings: [],
+    durationMs: Date.now() - startedAt
+  };
 }
 
 export async function guardStdioServer(commandWithArgs, options = {}) {
@@ -461,6 +504,10 @@ function listSourceFiles(root) {
 }
 
 function formatTextResult(result) {
+  if (Array.isArray(result.runs)) {
+    return formatRepeatedTextResult(result);
+  }
+
   const status = result.ok ? 'PASS' : 'FAIL';
   const invalidFrames = result.issues.filter((issue) => issue.code.startsWith('stdout-')).length;
   const stderrLines = result.stderr ? result.stderr.trim().split(/\r?\n/).filter(Boolean).length : 0;
@@ -489,6 +536,36 @@ function formatTextResult(result) {
 
   for (const issue of result.issues) {
     lines.push(`[${issue.severity}] ${issue.code}: ${issue.message}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatRepeatedTextResult(result) {
+  const status = result.ok ? 'PASS' : 'FAIL';
+  const passedRuns = result.runs.filter((run) => run.ok).length;
+  const lines = [
+    `${status} MCP stdio guard`,
+    `runs: ${passedRuns}/${result.runs.length} passed`
+  ];
+
+  for (const run of result.runs) {
+    const runStatus = run.ok ? 'PASS' : 'FAIL';
+    const invalidFrames = run.issues.filter((issue) => issue.code.startsWith('stdout-')).length;
+    const stderrLines = run.stderr ? run.stderr.trim().split(/\r?\n/).filter(Boolean).length : 0;
+    lines.push(`run ${run.run}: ${runStatus}, initialize ${run.initialized ? 'ok' : 'failed'}, frames ${run.frames.length} stdout / ${invalidFrames} invalid, stderr ${stderrLines} lines`);
+  }
+
+  if (result.staticFindings.length) {
+    lines.push(`static findings: ${result.staticFindings.length}`);
+    for (const finding of result.staticFindings.slice(0, 10)) {
+      lines.push(`[warning] ${finding.file}:${finding.line} ${finding.message}`);
+    }
+  }
+
+  for (const issue of result.issues) {
+    const prefix = issue.run ? `run ${issue.run} ` : '';
+    lines.push(`[${issue.severity}] ${prefix}${issue.code}: ${issue.message}`);
   }
 
   return lines.join('\n');
@@ -526,6 +603,7 @@ Usage:
 Options:
   --protocol <version>   MCP protocol version, default ${DEFAULT_PROTOCOL}
   --timeout <ms>         initialize and request timeout, default ${DEFAULT_TIMEOUT}
+  --repeat <count>       run the guard multiple times, default 1
   --scan <path>          scan source for risky stdout writes
   --fail-on-static       fail when --scan finds risky stdout writes
   --request <method>     send one MCP request after initialize, e.g. tools/list
