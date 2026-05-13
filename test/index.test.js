@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { guardStdioServer, parseArgs, scanSource, validateJsonRpc } from '../src/index.js';
+import { detectPythonBufferingIssue, guardStdioServer, parseArgs, scanSource, validateJsonRpc } from '../src/index.js';
 
 test('accepts a clean MCP initialize response', async () => {
   const server = makeServer(`
@@ -65,6 +65,36 @@ test('allows stderr diagnostics', async () => {
 
   assert.equal(result.ok, true);
   assert.match(result.stderr, /server starting/);
+});
+
+test('warns when Python commands may use buffered stdio', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: {} } }) + '\\n');
+      }
+    });
+  `);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-python-'));
+  const pythonBin = path.join(root, 'python');
+  fs.symlinkSync(process.execPath, pythonBin);
+
+  const result = await guardStdioServer([pythonBin, server], {
+    timeoutMs: 1000,
+    env: { ...process.env, PYTHONUNBUFFERED: '' }
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.issues.some((issue) => issue.code === 'python-buffered-stdio'));
+});
+
+test('detects Python unbuffered settings', () => {
+  assert.match(detectPythonBufferingIssue(['python', 'server.py'], {}), /buffered/);
+  assert.equal(detectPythonBufferingIssue(['python', '-u', 'server.py'], {}), '');
+  assert.equal(detectPythonBufferingIssue(['python', 'server.py'], { PYTHONUNBUFFERED: '1' }), '');
+  assert.equal(detectPythonBufferingIssue(['node', 'server.js'], {}), '');
 });
 
 test('reports initialize timeout', async () => {
