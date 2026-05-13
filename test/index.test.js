@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,6 @@ import {
   guardRepeatedStdioServer,
   guardStdioServer,
   parseArgs,
-  runCli,
   scanSource,
   validateJsonRpc
 } from '../src/index.js';
@@ -67,6 +67,8 @@ test('reports content-length framing clearly', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'stdout-content-length-framing'));
+  assert.equal(result.checks.initialize.status, 'fail');
+  assert.deepEqual(result.checks.initialize.issueCodes, ['stdout-content-length-framing']);
   assert.ok(!result.issues.some((issue) => issue.code === 'initialize-timeout'));
   assert.ok(!result.issues.some((issue) => issue.code === 'stdout-empty-line'));
 });
@@ -218,6 +220,33 @@ test('can send a post-initialize MCP request', async () => {
   assert.equal(result.checks.jsonRpc.status, 'pass');
   assert.equal(result.checks.operation.status, 'pass');
   assert.equal(result.checks.staticScan.status, 'skipped');
+});
+
+test('operation check reports stdout framing errors after initialize', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} } } }) + '\\n');
+        }
+        if (message.method === 'tools/list') {
+          process.stdout.write('Content-Length: 80\\r\\n\\r\\n');
+        }
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    operation: { method: 'tools/list' }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.initialized, true);
+  assert.equal(result.operation.responded, false);
+  assert.equal(result.checks.operation.status, 'fail');
+  assert.deepEqual(result.checks.operation.issueCodes, ['stdout-content-length-framing']);
 });
 
 test('json cli output exposes stable schema and static scan metadata', async () => {
@@ -446,23 +475,28 @@ function makeServer(source) {
 }
 
 async function captureCliOutput(argv) {
-  const originalLog = console.log;
-  const originalExitCode = process.exitCode;
-  let output = '';
+  const cliPath = path.resolve('bin/mcp-stdio-guard.js');
 
-  console.log = (value = '') => {
-    output += `${value}\n`;
-  };
-  process.exitCode = undefined;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...argv], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    let stderr = '';
 
-  try {
-    await runCli(argv);
-    return {
-      output: output.trim(),
-      exitCode: process.exitCode
-    };
-  } finally {
-    console.log = originalLog;
-    process.exitCode = originalExitCode;
-  }
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({
+        output: output.trim(),
+        stderr: stderr.trim(),
+        exitCode: code
+      });
+    });
+  });
 }

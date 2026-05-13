@@ -146,12 +146,12 @@ mcp-stdio-guard [options] -- <command> [args...]
 | `initialized` | whether the server completed the initialize handshake |
 | `operation` | post-initialize request result, or `null` when `--request` was not used |
 | `checks` | badge-friendly per-class statuses |
-| `issues` | machine-readable diagnostics with `severity`, `code`, and `message` |
+| `issues` | machine-readable diagnostics with `severity`, `code`, and `message`; repeat mode also adds `run` |
 | `staticScan` | whether source scanning was enabled and whether findings fail the command |
 | `staticFindings` | source scan findings with file, line, and message |
 | `runs` | per-run results when `--repeat` is used |
 
-Check statuses are `pass`, `fail`, `warning`, or `skipped`. The `checks` object separates the signal into `initialize`, `stdout`, `jsonRpc`, `operation`, `process`, `pythonBuffering`, `staticScan`, and `repeat`, each with stable `status` and `issueCodes` fields.
+Check statuses are `pass`, `fail`, `warning`, or `skipped`. The `checks` object separates the signal into `initialize`, `stdout`, `jsonRpc`, `operation`, `process`, `pythonBuffering`, `staticScan`, and `repeat`, each with stable `status` and `issueCodes` fields. When `--repeat` is used, `checks.repeat` also includes `runs`, `passedRuns`, and `failedRuns`; each entry in `runs` is a normal schema-versioned result for that individual guard run.
 
 Example:
 

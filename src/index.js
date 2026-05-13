@@ -531,6 +531,7 @@ function buildChecks(result) {
 function buildInitializeCheck(result, issues) {
   const matched = issues.filter((issue) => (
     INITIALIZE_ISSUE_CODES.has(issue.code)
+    || (!result.initialized && STDOUT_ISSUE_CODES.has(issue.code))
     || (!result.initialized && JSON_RPC_ISSUE_CODES.has(issue.code))
   ));
   if (matched.length) return makeCheck(statusFromIssues(matched), matched);
@@ -548,6 +549,7 @@ function buildOperationCheck(result, issues) {
 
   const matched = issues.filter((issue) => (
     OPERATION_ISSUE_CODES.has(issue.code)
+    || (!result.operation.responded && STDOUT_ISSUE_CODES.has(issue.code))
     || (!result.operation.responded && JSON_RPC_ISSUE_CODES.has(issue.code))
   ));
   if (matched.length) {
