@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/1Utkarsh1/mcp-stdio-guard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/1Utkarsh1/mcp-stdio-guard/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://www.npmjs.com/package/mcp-stdio-guard"><img alt="npm" src="https://img.shields.io/npm/v/mcp-stdio-guard?color=0b6bcb" /></a>
+  <a href="https://badge.socket.dev/npm/package/mcp-stdio-guard/0.2.0"><img alt="Socket" src="https://badge.socket.dev/npm/package/mcp-stdio-guard/0.2.0" /></a>
   <img alt="runtime dependencies" src="https://img.shields.io/badge/runtime%20deps-0-1f8f4c" />
   <img alt="node" src="https://img.shields.io/badge/node-%3E%3D18-2f855a" />
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-111827" /></a>
