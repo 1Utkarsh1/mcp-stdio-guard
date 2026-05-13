@@ -133,6 +133,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT;
   const protocol = options.protocol ?? DEFAULT_PROTOCOL;
   const operation = options.operation || null;
+  const env = options.env ?? process.env;
   const issues = [];
   const frames = [];
   const stderrChunks = [];
@@ -198,9 +199,14 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       child.stdin.write(`${JSON.stringify(message)}\n`);
     }
 
+    const pythonBufferingIssue = detectPythonBufferingIssue(commandWithArgs, env);
+    if (pythonBufferingIssue) {
+      addIssue('warning', 'python-buffered-stdio', pythonBufferingIssue);
+    }
+
     child = spawn(command, args, {
       cwd: options.cwd ?? process.cwd(),
-      env: process.env,
+      env,
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -325,6 +331,26 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       }
     }
   });
+}
+
+export function detectPythonBufferingIssue(commandWithArgs, env = process.env) {
+  const command = commandWithArgs[0] || '';
+  const args = commandWithArgs.slice(1);
+  const basename = path.basename(command).toLowerCase();
+
+  if (!/^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/.test(basename)) {
+    return '';
+  }
+
+  if (env.PYTHONUNBUFFERED && env.PYTHONUNBUFFERED !== '0') {
+    return '';
+  }
+
+  if (args.some((arg) => arg === '-u' || /^-[^-]*u/.test(arg))) {
+    return '';
+  }
+
+  return 'Python stdout is buffered when piped; use python -u or PYTHONUNBUFFERED=1 for MCP stdio servers';
 }
 
 function isResponseIdTypeMismatch(message, expectedId) {
