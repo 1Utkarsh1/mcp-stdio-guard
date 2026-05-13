@@ -101,6 +101,47 @@ test('can send a post-initialize MCP request', async () => {
   assert.equal(result.frames.length, 2);
 });
 
+test('reports initialize response id type mismatch', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: String(request.id), result: { protocolVersion: request.params.protocolVersion, capabilities: {} } }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 1000 });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+});
+
+test('reports operation response id type mismatch', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} } } }) + '\\n');
+        }
+        if (message.method === 'tools/list') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: String(message.id), result: { tools: [] } }) + '\\n');
+        }
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    operation: { method: 'tools/list' }
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+});
+
 test('reports operation timeout after initialize', async () => {
   const server = makeServer(`
     process.stdin.on('data', (chunk) => {

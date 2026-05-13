@@ -278,6 +278,13 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
       frames.push(message);
 
+      if (isResponseIdTypeMismatch(message, 1)) {
+        clearTimeout(timer);
+        addIssue('error', 'response-id-type-mismatch', `initialize response id ${JSON.stringify(message.id)} does not exactly match request id 1`);
+        finish();
+        return;
+      }
+
       if (message.id === 1) {
         clearTimeout(timer);
         if (message.error) {
@@ -303,6 +310,10 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         } else {
           finishSoon();
         }
+      } else if (operation && isResponseIdTypeMismatch(message, 2)) {
+        clearTimeout(timer);
+        addIssue('error', 'response-id-type-mismatch', `${operation.method} response id ${JSON.stringify(message.id)} does not exactly match request id 2`);
+        finish();
       } else if (operation && message.id === 2) {
         clearTimeout(timer);
         result.operation.responded = true;
@@ -314,6 +325,11 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       }
     }
   });
+}
+
+function isResponseIdTypeMismatch(message, expectedId) {
+  const hasResponsePayload = Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error');
+  return hasResponsePayload && Object.hasOwn(message, 'id') && message.id !== expectedId && String(message.id) === String(expectedId);
 }
 
 export function validateJsonRpc(message) {
