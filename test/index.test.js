@@ -222,6 +222,14 @@ test('can send a post-initialize MCP request', async () => {
   assert.equal(result.checks.staticScan.status, 'skipped');
 });
 
+test('prints the package version from the cli', async () => {
+  const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const { output, exitCode } = await captureCliOutput(['--version']);
+
+  assert.equal(exitCode, 0);
+  assert.equal(output, packageJson.version);
+});
+
 test('operation check reports stdout framing errors after initialize', async () => {
   const server = makeServer(`
     process.stdin.on('data', (chunk) => {

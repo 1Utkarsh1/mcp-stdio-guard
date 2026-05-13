@@ -4,8 +4,7 @@ import { spawn } from 'node:child_process';
 
 function loadVersion() {
   try {
-    const packageJsonPath = path.resolve(import.meta.dirname, '..', 'package.json');
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const packageJson = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
     return typeof packageJson.version === 'string' ? packageJson.version : '0.2.0';
   } catch {
     return '0.2.0';
