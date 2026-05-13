@@ -66,6 +66,8 @@ test('reports content-length framing clearly', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'stdout-content-length-framing'));
+  assert.ok(!result.issues.some((issue) => issue.code === 'initialize-timeout'));
+  assert.ok(!result.issues.some((issue) => issue.code === 'stdout-empty-line'));
 });
 
 test('allows stderr diagnostics', async () => {
@@ -109,10 +111,34 @@ test('warns when Python commands may use buffered stdio', async () => {
   assert.ok(result.issues.some((issue) => issue.code === 'python-buffered-stdio'));
 });
 
+test('merges env overrides with the parent environment', async () => {
+  const server = makeServer(`
+    if (!process.env.PATH || process.env.MCP_STDIO_GUARD_ENV_TEST !== 'present') {
+      process.exit(13);
+    }
+
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: {} } }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    env: { MCP_STDIO_GUARD_ENV_TEST: 'present' }
+  });
+
+  assert.equal(result.ok, true);
+});
+
 test('detects Python unbuffered settings', () => {
   assert.match(detectPythonBufferingIssue(['python', 'server.py'], {}), /buffered/);
   assert.equal(detectPythonBufferingIssue(['python', '-u', 'server.py'], {}), '');
   assert.equal(detectPythonBufferingIssue(['python', 'server.py'], { PYTHONUNBUFFERED: '1' }), '');
+  assert.equal(detectPythonBufferingIssue(['python', 'server.py'], { PYTHONUNBUFFERED: '0' }), '');
   assert.equal(detectPythonBufferingIssue(['node', 'server.js'], {}), '');
 });
 
@@ -200,6 +226,24 @@ test('reports initialize response id type mismatch', async () => {
   assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
 });
 
+test('rejects request frames that reuse the initialize response id', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, method: 'server/ping', params: {} }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 1000 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.initialized, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'stdout-unexpected-request-id'));
+});
+
 test('reports operation response id type mismatch', async () => {
   const server = makeServer(`
     process.stdin.on('data', (chunk) => {
@@ -222,6 +266,31 @@ test('reports operation response id type mismatch', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+});
+
+test('rejects request frames that reuse the operation response id', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} } } }) + '\\n');
+        }
+        if (message.method === 'tools/list') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, method: 'server/ping', params: {} }) + '\\n');
+        }
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    operation: { method: 'tools/list' }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.operation.responded, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'stdout-unexpected-request-id'));
 });
 
 test('reports operation timeout after initialize', async () => {
@@ -313,7 +382,9 @@ test('rejects params without request', () => {
 test('validates json-rpc frames', () => {
   assert.equal(validateJsonRpc({ jsonrpc: '2.0', id: 1, result: {} }), '');
   assert.equal(validateJsonRpc({ jsonrpc: '2.0', method: 'notifications/initialized' }), '');
+  assert.equal(validateJsonRpc({ jsonrpc: '2.0', id: 1, method: 'server/ping' }), '');
   assert.match(validateJsonRpc({ id: 1, result: {} }), /jsonrpc/);
+  assert.match(validateJsonRpc({ jsonrpc: '2.0', id: 1, method: 'server/ping', result: {} }), /must not include/);
   assert.match(validateJsonRpc({ jsonrpc: '2.0' }), /method/);
 });
 

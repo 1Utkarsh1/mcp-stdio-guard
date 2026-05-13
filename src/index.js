@@ -176,7 +176,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT;
   const protocol = options.protocol ?? DEFAULT_PROTOCOL;
   const operation = options.operation || null;
-  const env = options.env ?? process.env;
+  const env = { ...process.env, ...(options.env ?? {}) };
   const issues = [];
   const frames = [];
   const stderrChunks = [];
@@ -266,6 +266,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? '';
       for (const line of lines) {
+        if (result.durationMs) break;
         handleStdoutLine(line);
       }
     });
@@ -275,6 +276,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     });
 
     child.on('exit', (code, signal) => {
+      if (result.durationMs) return;
       clearTimeout(timer);
       if (stdoutBuffer.trim()) {
         addIssue('error', 'stdout-without-newline', `stdout ended with an incomplete JSON-RPC frame: ${quote(stdoutBuffer)}`);
@@ -313,6 +315,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
       if (/^Content-Length\s*:/i.test(line)) {
         addIssue('error', 'stdout-content-length-framing', 'stdout looks like LSP-style Content-Length framing; MCP stdio expects newline-delimited JSON-RPC frames');
+        finish();
         return;
       }
 
@@ -341,6 +344,12 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
       if (message.id === 1) {
         clearTimeout(timer);
+        if (!isJsonRpcResponse(message)) {
+          addIssue('error', 'stdout-unexpected-request-id', 'stdout frame with id 1 is not an initialize response');
+          finish();
+          return;
+        }
+
         if (message.error) {
           addIssue('error', 'initialize-error', `initialize returned error: ${message.error.message || JSON.stringify(message.error)}`);
           finish();
@@ -370,6 +379,12 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         finish();
       } else if (operation && message.id === 2) {
         clearTimeout(timer);
+        if (!isJsonRpcResponse(message)) {
+          addIssue('error', 'stdout-unexpected-request-id', `stdout frame with id 2 is not a ${operation.method} response`);
+          finish();
+          return;
+        }
+
         result.operation.responded = true;
         if (message.error) {
           result.operation.error = message.error;
@@ -390,7 +405,7 @@ export function detectPythonBufferingIssue(commandWithArgs, env = process.env) {
     return '';
   }
 
-  if (env.PYTHONUNBUFFERED && env.PYTHONUNBUFFERED !== '0') {
+  if (Object.hasOwn(env, 'PYTHONUNBUFFERED') && String(env.PYTHONUNBUFFERED) !== '') {
     return '';
   }
 
@@ -402,8 +417,15 @@ export function detectPythonBufferingIssue(commandWithArgs, env = process.env) {
 }
 
 function isResponseIdTypeMismatch(message, expectedId) {
-  const hasResponsePayload = Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error');
-  return hasResponsePayload && Object.hasOwn(message, 'id') && message.id !== expectedId && String(message.id) === String(expectedId);
+  return hasResponsePayload(message) && Object.hasOwn(message, 'id') && message.id !== expectedId && String(message.id) === String(expectedId);
+}
+
+function isJsonRpcResponse(message) {
+  return hasResponsePayload(message) && !Object.hasOwn(message, 'method');
+}
+
+function hasResponsePayload(message) {
+  return Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error');
 }
 
 export function validateJsonRpc(message) {
@@ -419,6 +441,10 @@ export function validateJsonRpc(message) {
   const hasMethod = typeof message.method === 'string';
   const hasResult = Object.hasOwn(message, 'result');
   const hasError = Object.hasOwn(message, 'error');
+
+  if (hasMethod && (hasResult || hasError)) {
+    return 'request/notification frame must not include result or error';
+  }
 
   if (hasId && !hasMethod && !hasResult && !hasError) {
     return 'response frame must include result or error';
