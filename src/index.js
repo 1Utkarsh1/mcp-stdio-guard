@@ -5,6 +5,37 @@ import { spawn } from 'node:child_process';
 const DEFAULT_PROTOCOL = '2025-11-25';
 const DEFAULT_TIMEOUT = 5000;
 const VERSION = '0.1.0';
+const JSON_SCHEMA_VERSION = 1;
+
+const STDOUT_ISSUE_CODES = new Set([
+  'stdout-empty-line',
+  'stdout-content-length-framing',
+  'stdout-invalid-json-rpc',
+  'stdout-non-json',
+  'stdout-unexpected-request-id',
+  'stdout-without-newline'
+]);
+const JSON_RPC_ISSUE_CODES = new Set([
+  'response-id-type-mismatch',
+  'stdout-invalid-json-rpc',
+  'stdout-unexpected-request-id'
+]);
+const INITIALIZE_ISSUE_CODES = new Set([
+  'initialize-error',
+  'initialize-timeout',
+  'server-exited',
+  'spawn-failed'
+]);
+const OPERATION_ISSUE_CODES = new Set([
+  'operation-error',
+  'operation-missing-response',
+  'operation-timeout'
+]);
+const PROCESS_ISSUE_CODES = new Set([
+  'server-crashed',
+  'server-exited',
+  'spawn-failed'
+]);
 
 export async function runCli(argv) {
   const options = parseArgs(argv);
@@ -40,6 +71,11 @@ export async function runCli(argv) {
     : await guardStdioServer(options.command, guardOptions);
 
   if (options.scanPath) {
+    result.staticScan = {
+      enabled: true,
+      path: options.scanPath,
+      failOnFindings: options.failOnStatic
+    };
     result.staticFindings = scanSource(options.scanPath);
     if (options.failOnStatic) {
       for (const finding of result.staticFindings) {
@@ -52,7 +88,7 @@ export async function runCli(argv) {
     }
   }
 
-  result.ok = !result.issues.some((issue) => issue.severity === 'error');
+  finalizeResult(result);
 
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
@@ -157,16 +193,19 @@ export async function guardRepeatedStdioServer(commandWithArgs, options = {}) {
     }
   }
 
-  return {
+  return finalizeResult({
+    schemaVersion: JSON_SCHEMA_VERSION,
     ok: !issues.some((issue) => issue.severity === 'error'),
     command: commandWithArgs,
     protocol: options.protocol ?? DEFAULT_PROTOCOL,
     repeat,
     runs,
     issues,
+    checks: {},
+    staticScan: defaultStaticScan(),
     staticFindings: [],
     durationMs: Date.now() - startedAt
-  };
+  });
 }
 
 export async function guardStdioServer(commandWithArgs, options = {}) {
@@ -187,6 +226,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   let child;
 
   const result = {
+    schemaVersion: JSON_SCHEMA_VERSION,
     ok: false,
     command: commandWithArgs,
     protocol,
@@ -201,7 +241,9 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       : null,
     frames,
     issues,
+    checks: {},
     stderr: '',
+    staticScan: defaultStaticScan(),
     staticFindings: [],
     durationMs: 0
   };
@@ -230,7 +272,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       result.durationMs = Date.now() - startedAt;
       result.stderr = Buffer.concat(stderrChunks).toString('utf8');
       result.initialized = initialized;
-      result.ok = !issues.some((issue) => issue.severity === 'error');
+      finalizeResult(result);
       if (child && !child.killed && child.exitCode === null) {
         endedByGuard = true;
         child.kill('SIGTERM');
@@ -455,6 +497,138 @@ export function validateJsonRpc(message) {
   }
 
   return '';
+}
+
+function finalizeResult(result) {
+  result.schemaVersion = JSON_SCHEMA_VERSION;
+  result.staticScan ??= defaultStaticScan();
+  result.staticFindings ??= [];
+  result.ok = !result.issues.some((issue) => issue.severity === 'error');
+  result.checks = buildChecks(result);
+  return result;
+}
+
+function buildChecks(result) {
+  const issues = result.issues ?? [];
+  const repeated = Array.isArray(result.runs);
+
+  return {
+    initialize: repeated
+      ? aggregateRunCheck(result, 'initialize')
+      : buildInitializeCheck(result, issues),
+    stdout: buildIssueCheck(issues, (issue) => STDOUT_ISSUE_CODES.has(issue.code)),
+    jsonRpc: buildIssueCheck(issues, (issue) => JSON_RPC_ISSUE_CODES.has(issue.code)),
+    operation: repeated
+      ? aggregateRunCheck(result, 'operation')
+      : buildOperationCheck(result, issues),
+    process: buildIssueCheck(issues, (issue) => PROCESS_ISSUE_CODES.has(issue.code)),
+    pythonBuffering: buildIssueCheck(issues, (issue) => issue.code === 'python-buffered-stdio'),
+    staticScan: buildStaticScanCheck(result, issues),
+    repeat: buildRepeatCheck(result)
+  };
+}
+
+function buildInitializeCheck(result, issues) {
+  const matched = issues.filter((issue) => (
+    INITIALIZE_ISSUE_CODES.has(issue.code)
+    || (!result.initialized && JSON_RPC_ISSUE_CODES.has(issue.code))
+  ));
+  if (matched.length) return makeCheck(statusFromIssues(matched), matched);
+  return makeCheck(result.initialized ? 'pass' : 'fail', []);
+}
+
+function buildOperationCheck(result, issues) {
+  if (!result.operation) {
+    return makeCheck('skipped', []);
+  }
+
+  if (!result.initialized) {
+    return makeCheck('skipped', []);
+  }
+
+  const matched = issues.filter((issue) => (
+    OPERATION_ISSUE_CODES.has(issue.code)
+    || (!result.operation.responded && JSON_RPC_ISSUE_CODES.has(issue.code))
+  ));
+  if (matched.length) {
+    return makeCheck(statusFromIssues(matched), matched);
+  }
+
+  return makeCheck(result.operation.responded ? 'pass' : 'fail', []);
+}
+
+function buildStaticScanCheck(result, issues) {
+  if (!result.staticScan?.enabled) {
+    return makeCheck('skipped', []);
+  }
+
+  const matched = issues.filter((issue) => issue.code === 'static-stdout-write');
+  if (matched.length) {
+    return makeCheck(statusFromIssues(matched), matched);
+  }
+
+  if (result.staticFindings?.length) {
+    return makeCheck('warning', [{ code: 'static-stdout-write' }]);
+  }
+
+  return makeCheck('pass', []);
+}
+
+function buildRepeatCheck(result) {
+  if (!Array.isArray(result.runs)) {
+    return makeCheck('skipped', []);
+  }
+
+  const failedRuns = result.runs.filter((run) => !run.ok).map((run) => run.run);
+  return {
+    ...makeCheck(failedRuns.length ? 'fail' : 'pass', result.issues ?? []),
+    runs: result.runs.length,
+    passedRuns: result.runs.length - failedRuns.length,
+    failedRuns
+  };
+}
+
+function aggregateRunCheck(result, checkName) {
+  const checks = result.runs
+    .map((run) => run.checks?.[checkName])
+    .filter(Boolean)
+    .filter((check) => check.status !== 'skipped');
+
+  if (!checks.length) {
+    return makeCheck('skipped', []);
+  }
+
+  const status = checks.some((check) => check.status === 'fail')
+    ? 'fail'
+    : checks.some((check) => check.status === 'warning')
+      ? 'warning'
+      : 'pass';
+  const issueCodes = [...new Set(checks.flatMap((check) => check.issueCodes))].sort();
+  return { status, issueCodes };
+}
+
+function buildIssueCheck(issues, predicate) {
+  const matched = issues.filter(predicate);
+  return makeCheck(matched.length ? statusFromIssues(matched) : 'pass', matched);
+}
+
+function statusFromIssues(issues) {
+  return issues.some((issue) => issue.severity === 'error') ? 'fail' : 'warning';
+}
+
+function makeCheck(status, issues) {
+  return {
+    status,
+    issueCodes: [...new Set(issues.map((issue) => issue.code))].sort()
+  };
+}
+
+function defaultStaticScan() {
+  return {
+    enabled: false,
+    path: '',
+    failOnFindings: false
+  };
 }
 
 export function scanSource(root) {
