@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -66,6 +67,8 @@ test('reports content-length framing clearly', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'stdout-content-length-framing'));
+  assert.equal(result.checks.initialize.status, 'fail');
+  assert.deepEqual(result.checks.initialize.issueCodes, ['stdout-content-length-framing']);
   assert.ok(!result.issues.some((issue) => issue.code === 'initialize-timeout'));
   assert.ok(!result.issues.some((issue) => issue.code === 'stdout-empty-line'));
 });
@@ -170,6 +173,10 @@ test('can repeat runs and identify the failing run', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.repeat, 2);
   assert.equal(result.runs.length, 2);
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.checks.repeat.status, 'fail');
+  assert.deepEqual(result.checks.repeat.failedRuns, [1]);
+  assert.equal(result.runs[0].schemaVersion, 1);
   assert.equal(result.runs[0].ok, false);
   assert.equal(result.runs[1].ok, true);
   assert.ok(result.issues.some((issue) => issue.run === 1 && issue.code === 'stdout-non-json'));
@@ -207,6 +214,82 @@ test('can send a post-initialize MCP request', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.operation.responded, true);
   assert.equal(result.frames.length, 2);
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.checks.initialize.status, 'pass');
+  assert.equal(result.checks.stdout.status, 'pass');
+  assert.equal(result.checks.jsonRpc.status, 'pass');
+  assert.equal(result.checks.operation.status, 'pass');
+  assert.equal(result.checks.staticScan.status, 'skipped');
+});
+
+test('prints the package version from the cli', async () => {
+  const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+  const { output, exitCode } = await captureCliOutput(['--version']);
+
+  assert.equal(exitCode, 0);
+  assert.equal(output, packageJson.version);
+});
+
+test('operation check reports stdout framing errors after initialize', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} } } }) + '\\n');
+        }
+        if (message.method === 'tools/list') {
+          process.stdout.write('Content-Length: 80\\r\\n\\r\\n');
+        }
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    operation: { method: 'tools/list' }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.initialized, true);
+  assert.equal(result.operation.responded, false);
+  assert.equal(result.checks.operation.status, 'fail');
+  assert.deepEqual(result.checks.operation.issueCodes, ['stdout-content-length-framing']);
+});
+
+test('json cli output exposes stable schema and static scan metadata', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: request.params.protocolVersion, capabilities: {} } }) + '\\n');
+      }
+    });
+  `);
+  const scanRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-json-contract-'));
+  fs.writeFileSync(path.join(scanRoot, 'server.js'), 'console.log("debug");\n');
+
+  const { output, exitCode } = await captureCliOutput([
+    '--json',
+    '--scan',
+    scanRoot,
+    '--fail-on-static',
+    '--',
+    process.execPath,
+    server
+  ]);
+  const result = JSON.parse(output);
+
+  assert.equal(exitCode, 1);
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.staticScan.enabled, true);
+  assert.equal(result.staticScan.path, scanRoot);
+  assert.equal(result.staticScan.failOnFindings, true);
+  assert.equal(result.checks.staticScan.status, 'fail');
+  assert.deepEqual(result.checks.staticScan.issueCodes, ['static-stdout-write']);
+  assert.equal(result.checks.initialize.status, 'pass');
 });
 
 test('reports initialize response id type mismatch', async () => {
@@ -224,6 +307,8 @@ test('reports initialize response id type mismatch', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+  assert.equal(result.checks.initialize.status, 'fail');
+  assert.deepEqual(result.checks.initialize.issueCodes, ['response-id-type-mismatch']);
 });
 
 test('rejects request frames that reuse the initialize response id', async () => {
@@ -266,6 +351,8 @@ test('reports operation response id type mismatch', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+  assert.equal(result.checks.operation.status, 'fail');
+  assert.deepEqual(result.checks.operation.issueCodes, ['response-id-type-mismatch']);
 });
 
 test('rejects request frames that reuse the operation response id', async () => {
@@ -393,4 +480,31 @@ function makeServer(source) {
   const file = path.join(root, 'server.mjs');
   fs.writeFileSync(file, source);
   return file;
+}
+
+async function captureCliOutput(argv) {
+  const cliPath = path.resolve('bin/mcp-stdio-guard.js');
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...argv], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let output = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      resolve({
+        output: output.trim(),
+        stderr: stderr.trim(),
+        exitCode: code
+      });
+    });
+  });
 }

@@ -132,6 +132,48 @@ mcp-stdio-guard [options] -- <command> [args...]
 | `--cwd <path>` | run the server command from a specific directory |
 | `--help` | show help |
 
+## JSON Contract
+
+`--json` is intended for CI, registries, and badge ingestion. The current contract is `schemaVersion: 1`; new fields may be added, but these fields are stable for consumers:
+
+| Field | Meaning |
+| --- | --- |
+| `schemaVersion` | JSON contract version, currently `1` |
+| `ok` | `true` when no error-severity issue was found |
+| `command` | command and arguments that were validated |
+| `protocol` | MCP protocol version sent by the guard |
+| `negotiatedProtocol` | protocol version returned by the server, when available |
+| `initialized` | whether the server completed the initialize handshake |
+| `operation` | post-initialize request result, or `null` when `--request` was not used |
+| `checks` | badge-friendly per-class statuses |
+| `issues` | machine-readable diagnostics with `severity`, `code`, and `message`; repeat mode also adds `run` |
+| `staticScan` | whether source scanning was enabled and whether findings fail the command |
+| `staticFindings` | source scan findings with file, line, and message |
+| `runs` | per-run results when `--repeat` is used |
+
+Check statuses are `pass`, `fail`, `warning`, or `skipped`. The `checks` object separates the signal into `initialize`, `stdout`, `jsonRpc`, `operation`, `process`, `pythonBuffering`, `staticScan`, and `repeat`, each with stable `status` and `issueCodes` fields. When `--repeat` is used, `checks.repeat` also includes `runs`, `passedRuns`, and `failedRuns`; each entry in `runs` is a normal schema-versioned result for that individual guard run.
+
+Example:
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "checks": {
+    "initialize": { "status": "pass", "issueCodes": [] },
+    "stdout": { "status": "pass", "issueCodes": [] },
+    "jsonRpc": { "status": "pass", "issueCodes": [] },
+    "operation": { "status": "pass", "issueCodes": [] },
+    "process": { "status": "pass", "issueCodes": [] },
+    "pythonBuffering": { "status": "pass", "issueCodes": [] },
+    "staticScan": { "status": "skipped", "issueCodes": [] },
+    "repeat": { "status": "skipped", "issueCodes": [] }
+  }
+}
+```
+
+The guard is registry-agnostic. It does not care whether an install command came from Smithery, Glama, GitHub, or a private catalog; it validates the command, working directory, optional source path, and observed stdio behavior.
+
 ## CI
 
 ```yaml
