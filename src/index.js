@@ -268,6 +268,11 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         return;
       }
 
+      if (/^Content-Length\s*:/i.test(line)) {
+        addIssue('error', 'stdout-content-length-framing', 'stdout looks like LSP-style Content-Length framing; MCP stdio expects newline-delimited JSON-RPC frames');
+        return;
+      }
+
       let message;
       try {
         message = JSON.parse(line);
@@ -512,6 +517,8 @@ function quote(value) {
 
 function helpText() {
   return `mcp-stdio-guard validates MCP stdio servers.
+
+MCP stdio output is expected as newline-delimited JSON-RPC on stdout.
 
 Usage:
   mcp-stdio-guard [options] -- <command> [args...]

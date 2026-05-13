@@ -49,6 +49,18 @@ test('fails when stdout contains non-json diagnostics', async () => {
   assert.ok(result.issues.some((issue) => issue.code === 'stdout-non-json'));
 });
 
+test('reports content-length framing clearly', async () => {
+  const server = makeServer(`
+    process.stdout.write('Content-Length: 80\\r\\n\\r\\n');
+    process.stdin.resume();
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 150 });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'stdout-content-length-framing'));
+});
+
 test('allows stderr diagnostics', async () => {
   const server = makeServer(`
     console.error('server starting...');
