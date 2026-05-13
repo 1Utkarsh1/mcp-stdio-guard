@@ -77,6 +77,12 @@ JSON output for CI:
 mcp-stdio-guard --json --request tools/list -- node ./server.js
 ```
 
+Repeat the same guard to catch cold/warm startup behavior:
+
+```bash
+mcp-stdio-guard --repeat 2 --request tools/list -- node ./server.js
+```
+
 ## What It Catches
 
 <p align="center">
@@ -86,6 +92,7 @@ mcp-stdio-guard --json --request tools/list -- node ./server.js
 | Problem | Runtime check | Static scan |
 | --- | --- | --- |
 | `console.log("starting")` before server startup | Yes | Yes |
+| Dependency/import-time stdout pollution | Yes with `--repeat` | No |
 | Python `print("debug")` in a stdio server | Yes | Yes |
 | Late stdout logs after `initialize` | Yes | Partial |
 | Invalid JSON-RPC frames | Yes | No |
@@ -116,6 +123,7 @@ mcp-stdio-guard [options] -- <command> [args...]
 | --- | --- |
 | `--protocol <version>` | MCP protocol version to send, default `2025-11-25` |
 | `--timeout <ms>` | initialize and request timeout, default `5000` |
+| `--repeat <count>` | run the same guard multiple times to catch cold/warm startup behavior |
 | `--request <method>` | send one MCP request after initialization, for example `tools/list` |
 | `--params <json>` | JSON params for `--request` |
 | `--scan <path>` | scan source for risky stdout writes |
