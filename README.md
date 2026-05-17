@@ -147,12 +147,29 @@ mcp-stdio-guard [options] -- <command> [args...]
 | `initialized` | whether the server completed the initialize handshake |
 | `operation` | post-initialize request result, or `null` when `--request` was not used |
 | `checks` | badge-friendly per-class statuses |
-| `issues` | machine-readable diagnostics with `severity`, `code`, and `message`; repeat mode also adds `run` |
+| `issueClasses` | registry-friendly summary grouped by `installRuntime`, `stdioTransport`, and `mcpProtocol` |
+| `issues` | machine-readable diagnostics with `class`, `severity`, `code`, and `message`; repeat mode also adds `run` |
 | `staticScan` | whether source scanning was enabled and whether findings fail the command |
 | `staticFindings` | source scan findings with file, line, and message |
 | `runs` | per-run results when `--repeat` is used |
 
 Check statuses are `pass`, `fail`, `warning`, or `skipped`. The `checks` object separates the signal into `initialize`, `stdout`, `jsonRpc`, `operation`, `process`, `pythonBuffering`, `staticScan`, and `repeat`, each with stable `status` and `issueCodes` fields. When `--repeat` is used, `checks.repeat` also includes `runs`, `passedRuns`, and `failedRuns`; each entry in `runs` is a normal schema-versioned result for that individual guard run.
+
+`issueClasses` is additive to `checks`. It groups issue codes by the kind of problem a registry or client should display:
+
+| Issue class | Meaning | Display guidance |
+| --- | --- | --- |
+| `installRuntime` | the command could not start, timed out, exited, crashed, or hit a runtime advisory | show as "needs inspection" or "runtime/install issue"; do not present it as an MCP protocol violation |
+| `stdioTransport` | stdout was not a clean newline-delimited JSON-RPC channel, or source scan found risky stdout writes | show as stdio hygiene failure; ask maintainers to keep diagnostics on stderr |
+| `mcpProtocol` | the server emitted invalid JSON-RPC/MCP responses, mismatched request ids, or returned initialize/operation errors | show as MCP/JSON-RPC conformance issue |
+
+Current issue-code mapping:
+
+| Issue class | Issue codes |
+| --- | --- |
+| `installRuntime` | `initialize-timeout`, `operation-missing-response`, `operation-timeout`, `python-buffered-stdio`, `server-crashed`, `server-exited`, `spawn-failed` |
+| `stdioTransport` | `static-stdout-write`, `stdout-content-length-framing`, `stdout-empty-line`, `stdout-non-json`, `stdout-without-newline` |
+| `mcpProtocol` | `initialize-error`, `operation-error`, `response-id-type-mismatch`, `stdout-invalid-json-rpc`, `stdout-unexpected-request-id` |
 
 Example:
 
@@ -160,6 +177,11 @@ Example:
 {
   "schemaVersion": 1,
   "ok": true,
+  "issueClasses": {
+    "installRuntime": { "status": "pass", "issueCodes": [] },
+    "stdioTransport": { "status": "pass", "issueCodes": [] },
+    "mcpProtocol": { "status": "pass", "issueCodes": [] }
+  },
   "checks": {
     "initialize": { "status": "pass", "issueCodes": [] },
     "stdout": { "status": "pass", "issueCodes": [] },
