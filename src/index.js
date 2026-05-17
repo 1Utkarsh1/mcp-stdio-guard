@@ -301,6 +301,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   let initialized = false;
   let endedByGuard = false;
   let initializeResponseAt = 0;
+  let phase = 'initialize';
   let timer;
   let child;
 
@@ -322,6 +323,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     issues,
     checks: {},
     stderr: '',
+    process: defaultProcessInfo(timeoutMs),
     staticScan: defaultStaticScan(),
     staticFindings: [],
     durationMs: 0,
@@ -335,14 +337,20 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   };
 
   return new Promise((resolve) => {
-    function addIssue(severity, code, message) {
-      issues.push({ severity, code, message });
+    function addIssue(severity, code, message, details = {}) {
+      issues.push({ severity, code, message, ...details });
     }
 
     function armTimeout(code, message) {
       clearTimeout(timer);
+      phase = code === 'operation-timeout' ? 'operation' : 'initialize';
+      result.process.phase = phase;
       timer = setTimeout(() => {
-        addIssue('error', code, message);
+        result.process.timedOut = true;
+        result.process.timeoutCode = code;
+        result.process.timeoutMs = timeoutMs;
+        result.process.outcome = 'timeout';
+        addIssue('error', code, message, timeoutIssueDetails(code, timeoutMs));
         finish();
       }, timeoutMs);
     }
@@ -360,8 +368,18 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       result.initialized = initialized;
       result.fingerprint.timings.startupMs = initializeResponseAt ? initializeResponseAt - startedAt : null;
       result.fingerprint.timings.totalMs = result.durationMs;
+      result.process.phase = phase;
+      const willTerminate = child && result.process.started && !child.killed && child.exitCode === null;
+      if (willTerminate) {
+        result.process.killedByGuard = true;
+        result.process.killSignal = 'SIGTERM';
+        result.process.killReason = result.process.timedOut ? 'timeout' : 'guard-finished';
+        if (!result.process.outcome || result.process.outcome === 'running') {
+          result.process.outcome = 'guard-terminated';
+        }
+      }
       finalizeResult(result);
-      if (child && !child.killed && child.exitCode === null) {
+      if (willTerminate) {
         endedByGuard = true;
         child.kill('SIGTERM');
       }
@@ -369,6 +387,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     }
 
     function send(message) {
+      if (!child?.stdin?.writable) return;
       child.stdin.write(`${JSON.stringify(message)}\n`);
     }
 
@@ -382,14 +401,34 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       env,
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    result.process.pid = child.pid ?? null;
 
     armTimeout('initialize-timeout', `no initialize response within ${timeoutMs}ms`);
 
+    child.on('spawn', () => {
+      result.process.started = true;
+      result.process.pid = child.pid ?? null;
+      result.process.outcome = 'running';
+    });
+
     child.on('error', (error) => {
       clearTimeout(timer);
-      addIssue('error', 'spawn-failed', error.message);
+      phase = 'startup';
+      result.process.phase = 'startup';
+      result.process.outcome = 'spawn-failed';
+      result.process.spawnError = {
+        code: error.code || '',
+        message: error.message
+      };
+      addIssue('error', 'spawn-failed', error.message, {
+        detailCode: 'spawn-failed-before-startup',
+        phase: 'startup',
+        spawnErrorCode: error.code || ''
+      });
       finish();
     });
+
+    child.stdin.on('error', () => {});
 
     child.stdout.on('data', (chunk) => {
       stdoutBuffer += chunk.toString('utf8');
@@ -408,17 +447,27 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     child.on('exit', (code, signal) => {
       if (result.durationMs) return;
       clearTimeout(timer);
+      const exitPhase = initialized
+        ? result.operation && !result.operation.responded
+          ? 'operation'
+          : 'post-initialize'
+        : 'initialize';
+      phase = exitPhase;
+      result.process.phase = exitPhase;
+      result.process.outcome = 'exited';
+      result.process.exitCode = code;
+      result.process.signal = signal;
       if (stdoutBuffer.trim()) {
         addIssue('error', 'stdout-without-newline', `stdout ended with an incomplete JSON-RPC frame: ${quote(stdoutBuffer)}`);
       }
       if (!endedByGuard && initialized && result.operation && !result.operation.responded) {
-        addIssue('error', 'operation-missing-response', `${result.operation.method} did not receive a response before server exit`);
+        addIssue('error', 'operation-missing-response', `${result.operation.method} did not receive a response before server exit`, exitIssueDetails('during-operation', code, signal));
       }
-      if (!endedByGuard && initialized && code && code !== 0) {
-        addIssue('error', 'server-crashed', `server exited after initialize (code ${code}, signal ${signal ?? 'null'})`);
+      if (!endedByGuard && initialized && isAbnormalExit(code, signal)) {
+        addIssue('error', 'server-crashed', `server exited after initialize (code ${code ?? 'null'}, signal ${signal ?? 'null'})`, exitIssueDetails('after-initialize', code, signal));
       }
       if (!initialized && !endedByGuard && !issues.some((issue) => issue.code === 'spawn-failed')) {
-        addIssue('error', 'server-exited', `server exited before initialize completed (code ${code ?? 'null'}, signal ${signal ?? 'null'})`);
+        addIssue('error', 'server-exited', `server exited before initialize completed (code ${code ?? 'null'}, signal ${signal ?? 'null'})`, exitIssueDetails('before-initialize', code, signal));
       }
       finish();
     });
@@ -488,6 +537,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         }
 
         initialized = true;
+        phase = operation ? 'operation' : 'post-initialize';
         result.negotiatedProtocol = message.result?.protocolVersion || '';
         send({ jsonrpc: '2.0', method: 'notifications/initialized' });
         if (operation) {
@@ -517,6 +567,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         }
 
         result.operation.responded = true;
+        phase = 'post-initialize';
         if (message.error) {
           result.operation.error = message.error;
           addIssue('warning', 'operation-error', `${operation.method} returned error: ${message.error.message || JSON.stringify(message.error)}`);
@@ -545,6 +596,55 @@ export function detectPythonBufferingIssue(commandWithArgs, env = process.env) {
   }
 
   return 'Python stdout is buffered when piped; use python -u or PYTHONUNBUFFERED=1 for MCP stdio servers';
+}
+
+function defaultProcessInfo(timeoutMs) {
+  return {
+    started: false,
+    pid: null,
+    outcome: 'starting',
+    phase: 'initialize',
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    timeoutCode: '',
+    timeoutMs,
+    killedByGuard: false,
+    killSignal: '',
+    killReason: '',
+    spawnError: null
+  };
+}
+
+function timeoutIssueDetails(code, timeoutMs) {
+  return {
+    detailCode: code === 'operation-timeout' ? 'request-timeout' : 'startup-timeout',
+    phase: code === 'operation-timeout' ? 'operation' : 'initialize',
+    timeoutMs
+  };
+}
+
+function exitIssueDetails(position, code, signal) {
+  return {
+    detailCode: exitDetailCode(position, code, signal),
+    phase: position === 'during-operation'
+      ? 'operation'
+      : position === 'before-initialize'
+        ? 'initialize'
+        : 'post-initialize',
+    exitCode: code,
+    signal
+  };
+}
+
+function exitDetailCode(position, code, signal) {
+  if (signal) return `signal-exit-${position}`;
+  if (code === 0) return `clean-exit-${position}`;
+  return `nonzero-exit-${position}`;
+}
+
+function isAbnormalExit(code, signal) {
+  return signal !== null || (code !== null && code !== 0);
 }
 
 function isResponseIdTypeMismatch(message, expectedId) {

@@ -314,7 +314,16 @@ test('reports initialize timeout', async () => {
   const result = await guardStdioServer([process.execPath, server], { timeoutMs: 150 });
 
   assert.equal(result.ok, false);
-  assert.ok(result.issues.some((issue) => issue.code === 'initialize-timeout'));
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'initialize-timeout'
+    && issue.detailCode === 'startup-timeout'
+    && issue.phase === 'initialize'
+  )));
+  assert.equal(result.process.timedOut, true);
+  assert.equal(result.process.timeoutCode, 'initialize-timeout');
+  assert.equal(result.process.timeoutMs, 150);
+  assert.equal(result.process.killedByGuard, true);
+  assert.equal(result.process.killReason, 'timeout');
 });
 
 test('can send a post-initialize MCP request', async () => {
@@ -453,11 +462,100 @@ test('classifies install/runtime exits separately from protocol failures', async
   const result = await guardStdioServer([process.execPath, server], { timeoutMs: 150 });
 
   assert.equal(result.ok, false);
-  assert.ok(result.issues.some((issue) => issue.code === 'server-exited' && issue.class === ISSUE_CLASSES.INSTALL_RUNTIME));
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'server-exited'
+    && issue.class === ISSUE_CLASSES.INSTALL_RUNTIME
+    && issue.detailCode === 'nonzero-exit-before-initialize'
+    && issue.exitCode === 2
+    && issue.signal === null
+  )));
+  assert.equal(result.process.outcome, 'exited');
+  assert.equal(result.process.phase, 'initialize');
+  assert.equal(result.process.exitCode, 2);
+  assert.equal(result.process.signal, null);
   assert.equal(result.issueClasses.installRuntime.status, 'fail');
   assert.deepEqual(result.issueClasses.installRuntime.issueCodes, ['server-exited']);
   assert.equal(result.issueClasses.stdioTransport.status, 'pass');
   assert.equal(result.issueClasses.mcpProtocol.status, 'pass');
+});
+
+test('reports spawn failures as startup process failures', async () => {
+  const missingCommand = path.join(os.tmpdir(), `mcp-stdio-missing-${Date.now()}`);
+  const result = await guardStdioServer([missingCommand], { timeoutMs: 150 });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'spawn-failed'
+    && issue.detailCode === 'spawn-failed-before-startup'
+    && issue.phase === 'startup'
+  )));
+  assert.equal(result.process.outcome, 'spawn-failed');
+  assert.equal(result.process.phase, 'startup');
+  assert.equal(result.process.started, false);
+  assert.equal(result.process.killedByGuard, false);
+  assert.ok(result.process.spawnError.message);
+});
+
+test('records clean exit after initialize without failing', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: { protocolVersion: message.params.protocolVersion, capabilities: {} }
+        }) + '\\n', () => process.exit(0));
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 1000 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.initialized, true);
+  assert.equal(result.process.outcome, 'exited');
+  assert.equal(result.process.phase, 'post-initialize');
+  assert.equal(result.process.exitCode, 0);
+  assert.equal(result.process.signal, null);
+  assert.ok(!result.issues.some((issue) => issue.code === 'server-crashed'));
+});
+
+test('reports clean exit during requested operation', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method === 'initialize') {
+          process.stdout.write(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} } }
+          }) + '\\n');
+        }
+        if (message.method === 'tools/list') {
+          process.exit(0);
+        }
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], {
+    timeoutMs: 1000,
+    operation: { method: 'tools/list' }
+  });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'operation-missing-response'
+    && issue.detailCode === 'clean-exit-during-operation'
+    && issue.exitCode === 0
+  )));
+  assert.equal(result.process.outcome, 'exited');
+  assert.equal(result.process.phase, 'operation');
+  assert.equal(result.process.exitCode, 0);
+  assert.ok(!result.issues.some((issue) => issue.code === 'server-crashed'));
 });
 
 test('keeps a stable issue-code to issue-class mapping', () => {
@@ -567,7 +665,14 @@ test('reports operation timeout after initialize', async () => {
   });
 
   assert.equal(result.ok, false);
-  assert.ok(result.issues.some((issue) => issue.code === 'operation-timeout'));
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'operation-timeout'
+    && issue.detailCode === 'request-timeout'
+    && issue.phase === 'operation'
+  )));
+  assert.equal(result.process.timedOut, true);
+  assert.equal(result.process.timeoutCode, 'operation-timeout');
+  assert.equal(result.process.phase, 'operation');
 });
 
 test('fails when server crashes after initialized notification', async () => {
@@ -589,7 +694,41 @@ test('fails when server crashes after initialized notification', async () => {
   const result = await guardStdioServer([process.execPath, server], { timeoutMs: 1000 });
 
   assert.equal(result.ok, false);
-  assert.ok(result.issues.some((issue) => issue.code === 'server-crashed'));
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'server-crashed'
+    && issue.detailCode === 'nonzero-exit-after-initialize'
+    && issue.exitCode !== 0
+  )));
+  assert.equal(result.process.outcome, 'exited');
+  assert.equal(result.process.exitCode, 1);
+});
+
+test('records signal termination after initialize', async () => {
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const message of messages) {
+        if (message.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: { protocolVersion: message.params.protocolVersion, capabilities: {} }
+        }) + '\\n', () => process.kill(process.pid, 'SIGTERM'));
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 1000 });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => (
+    issue.code === 'server-crashed'
+    && issue.detailCode === 'signal-exit-after-initialize'
+    && issue.signal === 'SIGTERM'
+  )));
+  assert.equal(result.process.outcome, 'exited');
+  assert.equal(result.process.exitCode, null);
+  assert.equal(result.process.signal, 'SIGTERM');
 });
 
 test('static scan catches risky stdout calls', () => {

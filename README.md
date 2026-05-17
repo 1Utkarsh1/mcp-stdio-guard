@@ -146,6 +146,7 @@ mcp-stdio-guard [options] -- <command> [args...]
 | `negotiatedProtocol` | protocol version returned by the server, when available |
 | `initialized` | whether the server completed the initialize handshake |
 | `operation` | post-initialize request result, or `null` when `--request` was not used |
+| `process` | startup, timeout, exit code, signal, and guard-termination metadata for a single run; repeat mode exposes this inside each `runs` entry |
 | `checks` | badge-friendly per-class statuses |
 | `issueClasses` | registry-friendly summary grouped by `installRuntime`, `stdioTransport`, and `mcpProtocol` |
 | `fingerprint` | redacted reproducibility metadata for debugging registry and CI runs |
@@ -171,6 +172,19 @@ Current issue-code mapping:
 | `installRuntime` | `initialize-timeout`, `operation-missing-response`, `operation-timeout`, `python-buffered-stdio`, `server-crashed`, `server-exited`, `spawn-failed` |
 | `stdioTransport` | `static-stdout-write`, `stdout-content-length-framing`, `stdout-empty-line`, `stdout-non-json`, `stdout-without-newline` |
 | `mcpProtocol` | `initialize-error`, `operation-error`, `response-id-type-mismatch`, `stdout-invalid-json-rpc`, `stdout-unexpected-request-id` |
+
+Runtime issue codes remain backward-compatible. For finer registry display, runtime issues may also include a stable `detailCode`:
+
+| Existing issue code | Detail codes |
+| --- | --- |
+| `spawn-failed` | `spawn-failed-before-startup` |
+| `server-exited` | `clean-exit-before-initialize`, `nonzero-exit-before-initialize`, `signal-exit-before-initialize` |
+| `initialize-timeout` | `startup-timeout` |
+| `operation-timeout` | `request-timeout` |
+| `operation-missing-response` | `clean-exit-during-operation`, `nonzero-exit-during-operation`, `signal-exit-during-operation` |
+| `server-crashed` | `nonzero-exit-after-initialize`, `signal-exit-after-initialize` |
+
+`process` records the observed lifecycle even when the run passes. `outcome` is one of `starting`, `running`, `exited`, `timeout`, `spawn-failed`, or `guard-terminated`; `phase` is `startup`, `initialize`, `operation`, or `post-initialize`. `exitCode` and `signal` are included when the process exits before the guard finishes; timeout runs include `timedOut`, `timeoutCode`, `timeoutMs`, and guard kill metadata.
 
 `fingerprint` helps explain why a result reproduced in one runner but not another. It includes the guard version, redacted command argv, cwd details, protocol, timeout, repeat count, requested operation, platform/arch, relevant runtime versions, package metadata when detectable, static-scan context, and startup/total duration. Environment variable values are always emitted as `<redacted>` and only explicitly provided env names are listed.
 
@@ -217,6 +231,21 @@ Example:
     },
     "staticScan": { "enabled": false, "path": "", "failOnFindings": false },
     "timings": { "startupMs": 42, "totalMs": 96 }
+  },
+  "process": {
+    "started": true,
+    "pid": 12345,
+    "outcome": "guard-terminated",
+    "phase": "post-initialize",
+    "exitCode": null,
+    "signal": null,
+    "timedOut": false,
+    "timeoutCode": "",
+    "timeoutMs": 5000,
+    "killedByGuard": true,
+    "killSignal": "SIGTERM",
+    "killReason": "guard-finished",
+    "spawnError": null
   },
   "issueClasses": {
     "installRuntime": { "status": "pass", "issueCodes": [] },
