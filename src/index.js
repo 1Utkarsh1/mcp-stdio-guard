@@ -16,6 +16,18 @@ const DEFAULT_TIMEOUT = 5000;
 const VERSION = loadVersion();
 const JSON_SCHEMA_VERSION = 1;
 
+export const ISSUE_CLASSES = Object.freeze({
+  INSTALL_RUNTIME: 'installRuntime',
+  STDIO_TRANSPORT: 'stdioTransport',
+  MCP_PROTOCOL: 'mcpProtocol'
+});
+
+const ISSUE_CLASS_NAMES = [
+  ISSUE_CLASSES.INSTALL_RUNTIME,
+  ISSUE_CLASSES.STDIO_TRANSPORT,
+  ISSUE_CLASSES.MCP_PROTOCOL
+];
+
 const STDOUT_ISSUE_CODES = new Set([
   'stdout-empty-line',
   'stdout-content-length-framing',
@@ -44,6 +56,27 @@ const PROCESS_ISSUE_CODES = new Set([
   'server-crashed',
   'server-exited',
   'spawn-failed'
+]);
+const ISSUE_CLASS_BY_CODE = new Map([
+  ['initialize-timeout', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['operation-missing-response', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['operation-timeout', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['python-buffered-stdio', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['server-crashed', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['server-exited', ISSUE_CLASSES.INSTALL_RUNTIME],
+  ['spawn-failed', ISSUE_CLASSES.INSTALL_RUNTIME],
+
+  ['static-stdout-write', ISSUE_CLASSES.STDIO_TRANSPORT],
+  ['stdout-content-length-framing', ISSUE_CLASSES.STDIO_TRANSPORT],
+  ['stdout-empty-line', ISSUE_CLASSES.STDIO_TRANSPORT],
+  ['stdout-non-json', ISSUE_CLASSES.STDIO_TRANSPORT],
+  ['stdout-without-newline', ISSUE_CLASSES.STDIO_TRANSPORT],
+
+  ['initialize-error', ISSUE_CLASSES.MCP_PROTOCOL],
+  ['operation-error', ISSUE_CLASSES.MCP_PROTOCOL],
+  ['response-id-type-mismatch', ISSUE_CLASSES.MCP_PROTOCOL],
+  ['stdout-invalid-json-rpc', ISSUE_CLASSES.MCP_PROTOCOL],
+  ['stdout-unexpected-request-id', ISSUE_CLASSES.MCP_PROTOCOL]
 ]);
 
 export async function runCli(argv) {
@@ -508,13 +541,26 @@ export function validateJsonRpc(message) {
   return '';
 }
 
+export function classifyIssueCode(code) {
+  return ISSUE_CLASS_BY_CODE.get(code) ?? ISSUE_CLASSES.MCP_PROTOCOL;
+}
+
 function finalizeResult(result) {
   result.schemaVersion = JSON_SCHEMA_VERSION;
   result.staticScan ??= defaultStaticScan();
   result.staticFindings ??= [];
+  result.issues = normalizeIssues(result.issues ?? []);
   result.ok = !result.issues.some((issue) => issue.severity === 'error');
   result.checks = buildChecks(result);
+  result.issueClasses = buildIssueClasses(result.issues);
   return result;
+}
+
+function normalizeIssues(issues) {
+  return issues.map((issue) => ({
+    ...issue,
+    class: classifyIssueCode(issue.code)
+  }));
 }
 
 function buildChecks(result) {
@@ -535,6 +581,13 @@ function buildChecks(result) {
     staticScan: buildStaticScanCheck(result, issues),
     repeat: buildRepeatCheck(result)
   };
+}
+
+function buildIssueClasses(issues) {
+  return Object.fromEntries(ISSUE_CLASS_NAMES.map((className) => [
+    className,
+    buildIssueCheck(issues, (issue) => issue.class === className)
+  ]));
 }
 
 function buildInitializeCheck(result, issues) {

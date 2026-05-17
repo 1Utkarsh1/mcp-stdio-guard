@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  ISSUE_CLASSES,
+  classifyIssueCode,
   detectPythonBufferingIssue,
   guardRepeatedStdioServer,
   guardStdioServer,
@@ -55,6 +57,11 @@ test('fails when stdout contains non-json diagnostics', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'stdout-non-json'));
+  assert.ok(result.issues.some((issue) => issue.code === 'stdout-non-json' && issue.class === ISSUE_CLASSES.STDIO_TRANSPORT));
+  assert.equal(result.issueClasses.stdioTransport.status, 'fail');
+  assert.deepEqual(result.issueClasses.stdioTransport.issueCodes, ['stdout-non-json']);
+  assert.equal(result.issueClasses.installRuntime.status, 'pass');
+  assert.equal(result.issueClasses.mcpProtocol.status, 'pass');
 });
 
 test('reports content-length framing clearly', async () => {
@@ -180,6 +187,9 @@ test('can repeat runs and identify the failing run', async () => {
   assert.equal(result.runs[0].ok, false);
   assert.equal(result.runs[1].ok, true);
   assert.ok(result.issues.some((issue) => issue.run === 1 && issue.code === 'stdout-non-json'));
+  assert.ok(result.issues.some((issue) => issue.run === 1 && issue.code === 'stdout-non-json' && issue.class === ISSUE_CLASSES.STDIO_TRANSPORT));
+  assert.equal(result.issueClasses.stdioTransport.status, 'fail');
+  assert.deepEqual(result.issueClasses.stdioTransport.issueCodes, ['stdout-non-json']);
 });
 
 test('reports initialize timeout', async () => {
@@ -284,11 +294,14 @@ test('json cli output exposes stable schema and static scan metadata', async () 
   assert.equal(exitCode, 1);
   assert.equal(result.schemaVersion, 1);
   assert.equal(result.ok, false);
+  assert.equal(result.issues[0].class, ISSUE_CLASSES.STDIO_TRANSPORT);
   assert.equal(result.staticScan.enabled, true);
   assert.equal(result.staticScan.path, scanRoot);
   assert.equal(result.staticScan.failOnFindings, true);
   assert.equal(result.checks.staticScan.status, 'fail');
   assert.deepEqual(result.checks.staticScan.issueCodes, ['static-stdout-write']);
+  assert.equal(result.issueClasses.stdioTransport.status, 'fail');
+  assert.deepEqual(result.issueClasses.stdioTransport.issueCodes, ['static-stdout-write']);
   assert.equal(result.checks.initialize.status, 'pass');
 });
 
@@ -307,8 +320,42 @@ test('reports initialize response id type mismatch', async () => {
 
   assert.equal(result.ok, false);
   assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch'));
+  assert.ok(result.issues.some((issue) => issue.code === 'response-id-type-mismatch' && issue.class === ISSUE_CLASSES.MCP_PROTOCOL));
   assert.equal(result.checks.initialize.status, 'fail');
   assert.deepEqual(result.checks.initialize.issueCodes, ['response-id-type-mismatch']);
+  assert.equal(result.issueClasses.mcpProtocol.status, 'fail');
+  assert.deepEqual(result.issueClasses.mcpProtocol.issueCodes, ['response-id-type-mismatch']);
+});
+
+test('classifies install/runtime exits separately from protocol failures', async () => {
+  const server = makeServer('process.exit(2);');
+  const result = await guardStdioServer([process.execPath, server], { timeoutMs: 150 });
+
+  assert.equal(result.ok, false);
+  assert.ok(result.issues.some((issue) => issue.code === 'server-exited' && issue.class === ISSUE_CLASSES.INSTALL_RUNTIME));
+  assert.equal(result.issueClasses.installRuntime.status, 'fail');
+  assert.deepEqual(result.issueClasses.installRuntime.issueCodes, ['server-exited']);
+  assert.equal(result.issueClasses.stdioTransport.status, 'pass');
+  assert.equal(result.issueClasses.mcpProtocol.status, 'pass');
+});
+
+test('keeps a stable issue-code to issue-class mapping', () => {
+  assert.equal(classifyIssueCode('spawn-failed'), ISSUE_CLASSES.INSTALL_RUNTIME);
+  assert.equal(classifyIssueCode('server-exited'), ISSUE_CLASSES.INSTALL_RUNTIME);
+  assert.equal(classifyIssueCode('initialize-timeout'), ISSUE_CLASSES.INSTALL_RUNTIME);
+  assert.equal(classifyIssueCode('operation-timeout'), ISSUE_CLASSES.INSTALL_RUNTIME);
+  assert.equal(classifyIssueCode('python-buffered-stdio'), ISSUE_CLASSES.INSTALL_RUNTIME);
+
+  assert.equal(classifyIssueCode('stdout-non-json'), ISSUE_CLASSES.STDIO_TRANSPORT);
+  assert.equal(classifyIssueCode('stdout-content-length-framing'), ISSUE_CLASSES.STDIO_TRANSPORT);
+  assert.equal(classifyIssueCode('stdout-without-newline'), ISSUE_CLASSES.STDIO_TRANSPORT);
+  assert.equal(classifyIssueCode('static-stdout-write'), ISSUE_CLASSES.STDIO_TRANSPORT);
+
+  assert.equal(classifyIssueCode('stdout-invalid-json-rpc'), ISSUE_CLASSES.MCP_PROTOCOL);
+  assert.equal(classifyIssueCode('stdout-unexpected-request-id'), ISSUE_CLASSES.MCP_PROTOCOL);
+  assert.equal(classifyIssueCode('response-id-type-mismatch'), ISSUE_CLASSES.MCP_PROTOCOL);
+  assert.equal(classifyIssueCode('initialize-error'), ISSUE_CLASSES.MCP_PROTOCOL);
+  assert.equal(classifyIssueCode('operation-error'), ISSUE_CLASSES.MCP_PROTOCOL);
 });
 
 test('rejects request frames that reuse the initialize response id', async () => {
