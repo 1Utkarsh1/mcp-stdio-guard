@@ -17,6 +17,31 @@ const DEFAULT_TIMEOUT = 5000;
 const VERSION = loadVersion();
 const JSON_SCHEMA_VERSION = 1;
 const REDACTED = '<redacted>';
+const VERSION_PROBE_CACHE = new Map();
+const NODE_OPTIONS_WITH_VALUES = new Set([
+  '--conditions',
+  '--cpu-prof-dir',
+  '--diagnostic-dir',
+  '--experimental-loader',
+  '--heapsnapshot-near-heap-limit',
+  '--import',
+  '--inspect-port',
+  '--loader',
+  '--max-old-space-size',
+  '--openssl-config',
+  '--perf-basic-prof-only-functions',
+  '--prof-process',
+  '--redirect-warnings',
+  '--require',
+  '--test-reporter',
+  '--test-reporter-destination',
+  '--title',
+  '--trace-event-categories',
+  '--trace-event-file-pattern',
+  '-C',
+  '-r'
+]);
+const NODE_EVAL_OPTIONS = new Set(['--eval', '--print', '-e', '-p']);
 
 export const ISSUE_CLASSES = Object.freeze({
   INSTALL_RUNTIME: 'installRuntime',
@@ -567,7 +592,7 @@ export function classifyIssueCode(code) {
   return ISSUE_CLASS_BY_CODE.get(code) ?? ISSUE_CLASSES.MCP_PROTOCOL;
 }
 
-function createFingerprint(commandWithArgs, options = {}) {
+export function createFingerprint(commandWithArgs, options = {}) {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const operation = options.operation || null;
 
@@ -694,17 +719,26 @@ function detectRuntimeVersions(commandWithArgs) {
 }
 
 function executableVersion(command, args) {
+  const cacheKey = JSON.stringify([command, args]);
+  if (VERSION_PROBE_CACHE.has(cacheKey)) {
+    return { ...VERSION_PROBE_CACHE.get(cacheKey) };
+  }
+
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     timeout: 1000,
     stdio: ['ignore', 'pipe', 'pipe']
   });
   const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
-  return {
+  const version = {
     command,
     version: output.split(/\r?\n/)[0] || '',
-    available: !result.error
+    available: !result.error && result.status === 0 && result.signal === null,
+    status: result.status,
+    signal: result.signal
   };
+  VERSION_PROBE_CACHE.set(cacheKey, version);
+  return { ...version };
 }
 
 function detectPackageMetadata(commandWithArgs, cwd) {
@@ -732,8 +766,9 @@ function detectPackageMetadata(commandWithArgs, cwd) {
     return image ? { manager: 'docker', name: image, versionSpec: '' } : null;
   }
 
-  if (isNodeCommand(command) && args[0]) {
-    return localPackageMetadata(path.resolve(cwd, args[0]));
+  if (isNodeCommand(command)) {
+    const entrypoint = nodeEntrypointArg(args);
+    return entrypoint ? localPackageMetadata(path.resolve(cwd, entrypoint)) : null;
   }
 
   return null;
@@ -753,6 +788,34 @@ function firstPackageSpec(args) {
     }
 
     if (arg.startsWith('-')) {
+      continue;
+    }
+
+    return arg;
+  }
+
+  return '';
+}
+
+function nodeEntrypointArg(args) {
+  let afterSeparator = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (!afterSeparator && arg === '--') {
+      afterSeparator = true;
+      continue;
+    }
+
+    if (!afterSeparator && arg.startsWith('-')) {
+      const optionName = arg.split('=')[0];
+      if (NODE_EVAL_OPTIONS.has(optionName)) {
+        return '';
+      }
+      if (NODE_OPTIONS_WITH_VALUES.has(optionName) && !arg.includes('=') && index + 1 < args.length) {
+        index += 1;
+      }
       continue;
     }
 

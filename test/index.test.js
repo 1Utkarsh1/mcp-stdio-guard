@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   ISSUE_CLASSES,
   classifyIssueCode,
+  createFingerprint,
   detectPythonBufferingIssue,
   guardRepeatedStdioServer,
   guardStdioServer,
@@ -89,6 +90,69 @@ test('adds a reproducibility fingerprint without env or arg secret values', asyn
   assert.ok(!JSON.stringify(result.fingerprint).includes('super-secret-token'));
   assert.ok(!JSON.stringify(result.fingerprint).includes('do-not-leak'));
   assert.ok(!JSON.stringify(result.fingerprint).includes('registry'));
+});
+
+test('fingerprint package detection handles common install commands', () => {
+  assert.deepEqual(createFingerprint(['npx', '--yes', '@scope/server@1.2.3']).package, {
+    manager: 'npm',
+    name: '@scope/server',
+    versionSpec: '1.2.3'
+  });
+  assert.deepEqual(createFingerprint(['npm', 'exec', '--package', 'plain-server@latest', '--', 'plain-server']).package, {
+    manager: 'npm',
+    name: 'plain-server',
+    versionSpec: 'latest'
+  });
+  assert.deepEqual(createFingerprint(['uvx', 'python-mcp-server==0.5.0']).package, {
+    manager: 'uv',
+    name: 'python-mcp-server==0.5.0',
+    versionSpec: ''
+  });
+  assert.deepEqual(createFingerprint(['docker', 'run', '--rm', '-e', 'TOKEN=secret', 'ghcr.io/example/server:1.0']).package, {
+    manager: 'docker',
+    name: 'ghcr.io/example/server:1.0',
+    versionSpec: ''
+  });
+});
+
+test('fingerprint local node package detection skips node flags', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-package-root-'));
+  const packageRoot = path.join(root, 'package');
+  const script = path.join(packageRoot, 'src', 'server.mjs');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+    name: 'local-node-server',
+    version: '9.8.7'
+  }));
+  fs.writeFileSync(script, '');
+
+  const fingerprint = createFingerprint([
+    process.execPath,
+    '--enable-source-maps',
+    '--inspect',
+    '-r',
+    'source-map-support/register',
+    '--',
+    script
+  ], { cwd: root });
+
+  assert.deepEqual(fingerprint.package, {
+    manager: 'local',
+    name: 'local-node-server',
+    versionSpec: '9.8.7'
+  });
+});
+
+test('fingerprint runtime probes mark non-zero probes unavailable', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-runtime-probe-'));
+  const fakePython = path.join(root, 'python');
+  fs.writeFileSync(fakePython, '#!/bin/sh\nexit 7\n');
+  fs.chmodSync(fakePython, 0o755);
+
+  const fingerprint = createFingerprint([fakePython]);
+
+  assert.equal(fingerprint.runtimes.python.available, false);
+  assert.equal(fingerprint.runtimes.python.status, 7);
 });
 
 test('fails when stdout contains non-json diagnostics', async () => {
