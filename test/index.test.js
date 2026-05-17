@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   ISSUE_CLASSES,
   classifyIssueCode,
+  createFingerprint,
   detectPythonBufferingIssue,
   guardRepeatedStdioServer,
   guardStdioServer,
@@ -39,6 +40,119 @@ test('accepts a clean MCP initialize response', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.initialized, true);
   assert.equal(result.frames.length, 1);
+});
+
+test('adds a reproducibility fingerprint without env or arg secret values', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-fingerprint-'));
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            protocolVersion: request.params.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'fingerprint-server', version: '1.0.0' }
+          }
+        }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([
+    process.execPath,
+    server,
+    '--api-token',
+    'do-not-leak'
+  ], {
+    timeoutMs: 1000,
+    cwd,
+    env: {
+      API_TOKEN: 'super-secret-token',
+      MCP_STDIO_GUARD_MODE: 'registry'
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.fingerprint.guard.name, 'mcp-stdio-guard');
+  assert.equal(result.fingerprint.cwd.resolved, cwd);
+  assert.equal(result.fingerprint.timeoutMs, 1000);
+  assert.equal(result.fingerprint.runtimes.node.role, 'guard-and-target');
+  assert.deepEqual(result.fingerprint.env.names, ['API_TOKEN', 'MCP_STDIO_GUARD_MODE']);
+  assert.equal(result.fingerprint.env.values.API_TOKEN, '<redacted>');
+  assert.equal(result.fingerprint.env.values.MCP_STDIO_GUARD_MODE, '<redacted>');
+  assert.deepEqual(result.fingerprint.command.args.slice(-2), ['--api-token', '<redacted>']);
+  assert.equal(typeof result.fingerprint.timings.startupMs, 'number');
+  assert.equal(typeof result.fingerprint.timings.totalMs, 'number');
+  assert.ok(!JSON.stringify(result.fingerprint).includes('super-secret-token'));
+  assert.ok(!JSON.stringify(result.fingerprint).includes('do-not-leak'));
+  assert.ok(!JSON.stringify(result.fingerprint).includes('registry'));
+});
+
+test('fingerprint package detection handles common install commands', () => {
+  assert.deepEqual(createFingerprint(['npx', '--yes', '@scope/server@1.2.3']).package, {
+    manager: 'npm',
+    name: '@scope/server',
+    versionSpec: '1.2.3'
+  });
+  assert.deepEqual(createFingerprint(['npm', 'exec', '--package', 'plain-server@latest', '--', 'plain-server']).package, {
+    manager: 'npm',
+    name: 'plain-server',
+    versionSpec: 'latest'
+  });
+  assert.deepEqual(createFingerprint(['uvx', 'python-mcp-server==0.5.0']).package, {
+    manager: 'uv',
+    name: 'python-mcp-server==0.5.0',
+    versionSpec: ''
+  });
+  assert.deepEqual(createFingerprint(['docker', 'run', '--rm', '-e', 'TOKEN=secret', 'ghcr.io/example/server:1.0']).package, {
+    manager: 'docker',
+    name: 'ghcr.io/example/server:1.0',
+    versionSpec: ''
+  });
+});
+
+test('fingerprint local node package detection skips node flags', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-package-root-'));
+  const packageRoot = path.join(root, 'package');
+  const script = path.join(packageRoot, 'src', 'server.mjs');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+    name: 'local-node-server',
+    version: '9.8.7'
+  }));
+  fs.writeFileSync(script, '');
+
+  const fingerprint = createFingerprint([
+    process.execPath,
+    '--enable-source-maps',
+    '--inspect',
+    '-r',
+    'source-map-support/register',
+    '--',
+    script
+  ], { cwd: root });
+
+  assert.deepEqual(fingerprint.package, {
+    manager: 'local',
+    name: 'local-node-server',
+    versionSpec: '9.8.7'
+  });
+});
+
+test('fingerprint runtime probes mark non-zero probes unavailable', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-runtime-probe-'));
+  const fakePython = path.join(root, 'python');
+  fs.writeFileSync(fakePython, '#!/bin/sh\nexit 7\n');
+  fs.chmodSync(fakePython, 0o755);
+
+  const fingerprint = createFingerprint([fakePython]);
+
+  assert.equal(fingerprint.runtimes.python.available, false);
+  assert.equal(fingerprint.runtimes.python.status, 7);
 });
 
 test('fails when stdout contains non-json diagnostics', async () => {
@@ -181,6 +295,8 @@ test('can repeat runs and identify the failing run', async () => {
   assert.equal(result.repeat, 2);
   assert.equal(result.runs.length, 2);
   assert.equal(result.schemaVersion, 1);
+  assert.equal(result.fingerprint.repeat, 2);
+  assert.equal(result.fingerprint.runs.length, 2);
   assert.equal(result.checks.repeat.status, 'fail');
   assert.deepEqual(result.checks.repeat.failedRuns, [1]);
   assert.equal(result.runs[0].schemaVersion, 1);
@@ -298,6 +414,11 @@ test('json cli output exposes stable schema and static scan metadata', async () 
   assert.equal(result.staticScan.enabled, true);
   assert.equal(result.staticScan.path, scanRoot);
   assert.equal(result.staticScan.failOnFindings, true);
+  assert.equal(result.fingerprint.staticScan.enabled, true);
+  assert.equal(result.fingerprint.staticScan.path, scanRoot);
+  assert.equal(result.fingerprint.guard.name, 'mcp-stdio-guard');
+  assert.equal(result.fingerprint.command.argv[0], process.execPath);
+  assert.equal(result.fingerprint.system.platform, process.platform);
   assert.equal(result.checks.staticScan.status, 'fail');
   assert.deepEqual(result.checks.staticScan.issueCodes, ['static-stdout-write']);
   assert.equal(result.issueClasses.stdioTransport.status, 'fail');
