@@ -301,7 +301,6 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   let initialized = false;
   let endedByGuard = false;
   let initializeResponseAt = 0;
-  let phase = 'initialize';
   let timer;
   let child;
 
@@ -338,19 +337,18 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
   return new Promise((resolve) => {
     function addIssue(severity, code, message, details = {}) {
-      issues.push({ severity, code, message, ...details });
+      issues.push({ ...details, severity, code, message });
     }
 
-    function armTimeout(code, message) {
+    function armTimeout(code, message, timeoutPhase) {
       clearTimeout(timer);
-      phase = code === 'operation-timeout' ? 'operation' : 'initialize';
-      result.process.phase = phase;
+      result.process.phase = timeoutPhase;
       timer = setTimeout(() => {
         result.process.timedOut = true;
         result.process.timeoutCode = code;
         result.process.timeoutMs = timeoutMs;
         result.process.outcome = 'timeout';
-        addIssue('error', code, message, timeoutIssueDetails(code, timeoutMs));
+        addIssue('error', code, message, timeoutIssueDetails(code, timeoutMs, timeoutPhase));
         finish();
       }, timeoutMs);
     }
@@ -368,7 +366,6 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       result.initialized = initialized;
       result.fingerprint.timings.startupMs = initializeResponseAt ? initializeResponseAt - startedAt : null;
       result.fingerprint.timings.totalMs = result.durationMs;
-      result.process.phase = phase;
       const willTerminate = child && result.process.started && !child.killed && child.exitCode === null;
       if (willTerminate) {
         result.process.killedByGuard = true;
@@ -403,7 +400,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     });
     result.process.pid = child.pid ?? null;
 
-    armTimeout('initialize-timeout', `no initialize response within ${timeoutMs}ms`);
+    armTimeout('initialize-timeout', `no initialize response within ${timeoutMs}ms`, 'initialize');
 
     child.on('spawn', () => {
       result.process.started = true;
@@ -413,7 +410,6 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
     child.on('error', (error) => {
       clearTimeout(timer);
-      phase = 'startup';
       result.process.phase = 'startup';
       result.process.outcome = 'spawn-failed';
       result.process.spawnError = {
@@ -452,7 +448,6 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
           ? 'operation'
           : 'post-initialize'
         : 'initialize';
-      phase = exitPhase;
       result.process.phase = exitPhase;
       result.process.outcome = 'exited';
       result.process.exitCode = code;
@@ -537,7 +532,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         }
 
         initialized = true;
-        phase = operation ? 'operation' : 'post-initialize';
+        result.process.phase = operation ? 'operation' : 'post-initialize';
         result.negotiatedProtocol = message.result?.protocolVersion || '';
         send({ jsonrpc: '2.0', method: 'notifications/initialized' });
         if (operation) {
@@ -550,7 +545,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
             request.params = operation.params;
           }
           send(request);
-          armTimeout('operation-timeout', `no ${operation.method} response within ${timeoutMs}ms`);
+          armTimeout('operation-timeout', `no ${operation.method} response within ${timeoutMs}ms`, 'operation');
         } else {
           finishSoon();
         }
@@ -567,7 +562,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
         }
 
         result.operation.responded = true;
-        phase = 'post-initialize';
+        result.process.phase = 'post-initialize';
         if (message.error) {
           result.operation.error = message.error;
           addIssue('warning', 'operation-error', `${operation.method} returned error: ${message.error.message || JSON.stringify(message.error)}`);
@@ -616,10 +611,10 @@ function defaultProcessInfo(timeoutMs) {
   };
 }
 
-function timeoutIssueDetails(code, timeoutMs) {
+function timeoutIssueDetails(code, timeoutMs, phase) {
   return {
     detailCode: code === 'operation-timeout' ? 'request-timeout' : 'startup-timeout',
-    phase: code === 'operation-timeout' ? 'operation' : 'initialize',
+    phase,
     timeoutMs
   };
 }
