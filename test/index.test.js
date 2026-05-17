@@ -41,6 +41,56 @@ test('accepts a clean MCP initialize response', async () => {
   assert.equal(result.frames.length, 1);
 });
 
+test('adds a reproducibility fingerprint without env or arg secret values', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-stdio-fingerprint-'));
+  const server = makeServer(`
+    process.stdin.on('data', (chunk) => {
+      const messages = chunk.toString('utf8').trim().split(/\\r?\\n/).filter(Boolean).map((line) => JSON.parse(line));
+      for (const request of messages) {
+        if (request.method !== 'initialize') continue;
+        process.stdout.write(JSON.stringify({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            protocolVersion: request.params.protocolVersion,
+            capabilities: {},
+            serverInfo: { name: 'fingerprint-server', version: '1.0.0' }
+          }
+        }) + '\\n');
+      }
+    });
+  `);
+
+  const result = await guardStdioServer([
+    process.execPath,
+    server,
+    '--api-token',
+    'do-not-leak'
+  ], {
+    timeoutMs: 1000,
+    cwd,
+    env: {
+      API_TOKEN: 'super-secret-token',
+      MCP_STDIO_GUARD_MODE: 'registry'
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.fingerprint.guard.name, 'mcp-stdio-guard');
+  assert.equal(result.fingerprint.cwd.resolved, cwd);
+  assert.equal(result.fingerprint.timeoutMs, 1000);
+  assert.equal(result.fingerprint.runtimes.node.role, 'guard-and-target');
+  assert.deepEqual(result.fingerprint.env.names, ['API_TOKEN', 'MCP_STDIO_GUARD_MODE']);
+  assert.equal(result.fingerprint.env.values.API_TOKEN, '<redacted>');
+  assert.equal(result.fingerprint.env.values.MCP_STDIO_GUARD_MODE, '<redacted>');
+  assert.deepEqual(result.fingerprint.command.args.slice(-2), ['--api-token', '<redacted>']);
+  assert.equal(typeof result.fingerprint.timings.startupMs, 'number');
+  assert.equal(typeof result.fingerprint.timings.totalMs, 'number');
+  assert.ok(!JSON.stringify(result.fingerprint).includes('super-secret-token'));
+  assert.ok(!JSON.stringify(result.fingerprint).includes('do-not-leak'));
+  assert.ok(!JSON.stringify(result.fingerprint).includes('registry'));
+});
+
 test('fails when stdout contains non-json diagnostics', async () => {
   const server = makeServer(`
     console.log('server starting...');
@@ -181,6 +231,8 @@ test('can repeat runs and identify the failing run', async () => {
   assert.equal(result.repeat, 2);
   assert.equal(result.runs.length, 2);
   assert.equal(result.schemaVersion, 1);
+  assert.equal(result.fingerprint.repeat, 2);
+  assert.equal(result.fingerprint.runs.length, 2);
   assert.equal(result.checks.repeat.status, 'fail');
   assert.deepEqual(result.checks.repeat.failedRuns, [1]);
   assert.equal(result.runs[0].schemaVersion, 1);
@@ -298,6 +350,11 @@ test('json cli output exposes stable schema and static scan metadata', async () 
   assert.equal(result.staticScan.enabled, true);
   assert.equal(result.staticScan.path, scanRoot);
   assert.equal(result.staticScan.failOnFindings, true);
+  assert.equal(result.fingerprint.staticScan.enabled, true);
+  assert.equal(result.fingerprint.staticScan.path, scanRoot);
+  assert.equal(result.fingerprint.guard.name, 'mcp-stdio-guard');
+  assert.equal(result.fingerprint.command.argv[0], process.execPath);
+  assert.equal(result.fingerprint.system.platform, process.platform);
   assert.equal(result.checks.staticScan.status, 'fail');
   assert.deepEqual(result.checks.staticScan.issueCodes, ['static-stdout-write']);
   assert.equal(result.issueClasses.stdioTransport.status, 'fail');

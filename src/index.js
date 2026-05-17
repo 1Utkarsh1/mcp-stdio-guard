@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 function loadVersion() {
   try {
@@ -15,6 +16,7 @@ const DEFAULT_PROTOCOL = '2025-11-25';
 const DEFAULT_TIMEOUT = 5000;
 const VERSION = loadVersion();
 const JSON_SCHEMA_VERSION = 1;
+const REDACTED = '<redacted>';
 
 export const ISSUE_CLASSES = Object.freeze({
   INSTALL_RUNTIME: 'installRuntime',
@@ -118,6 +120,9 @@ export async function runCli(argv) {
       path: options.scanPath,
       failOnFindings: options.failOnStatic
     };
+    if (result.fingerprint) {
+      result.fingerprint.staticScan = result.staticScan;
+    }
     result.staticFindings = scanSource(options.scanPath);
     if (options.failOnStatic) {
       for (const finding of result.staticFindings) {
@@ -226,8 +231,10 @@ export async function guardRepeatedStdioServer(commandWithArgs, options = {}) {
     throw new Error('repeat must be an integer >= 1');
   }
 
+  const singleRunOptions = { ...options, repeat: 1 };
+
   for (let index = 1; index <= repeat; index += 1) {
-    const run = await guardStdioServer(commandWithArgs, options);
+    const run = await guardStdioServer(commandWithArgs, singleRunOptions);
     run.run = index;
     runs.push(run);
     for (const issue of run.issues) {
@@ -235,7 +242,8 @@ export async function guardRepeatedStdioServer(commandWithArgs, options = {}) {
     }
   }
 
-  return finalizeResult({
+  const durationMs = Date.now() - startedAt;
+  const result = {
     schemaVersion: JSON_SCHEMA_VERSION,
     ok: !issues.some((issue) => issue.severity === 'error'),
     command: commandWithArgs,
@@ -246,8 +254,11 @@ export async function guardRepeatedStdioServer(commandWithArgs, options = {}) {
     checks: {},
     staticScan: defaultStaticScan(),
     staticFindings: [],
-    durationMs: Date.now() - startedAt
-  });
+    durationMs,
+    fingerprint: createFingerprint(commandWithArgs, options)
+  };
+  result.fingerprint.timings.totalMs = durationMs;
+  return finalizeResult(result);
 }
 
 export async function guardStdioServer(commandWithArgs, options = {}) {
@@ -264,6 +275,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
   let stdoutBuffer = '';
   let initialized = false;
   let endedByGuard = false;
+  let initializeResponseAt = 0;
   let timer;
   let child;
 
@@ -287,7 +299,14 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
     stderr: '',
     staticScan: defaultStaticScan(),
     staticFindings: [],
-    durationMs: 0
+    durationMs: 0,
+    fingerprint: createFingerprint(commandWithArgs, {
+      protocol,
+      timeoutMs,
+      cwd: options.cwd,
+      operation,
+      env: options.env
+    })
   };
 
   return new Promise((resolve) => {
@@ -314,6 +333,8 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
       result.durationMs = Date.now() - startedAt;
       result.stderr = Buffer.concat(stderrChunks).toString('utf8');
       result.initialized = initialized;
+      result.fingerprint.timings.startupMs = initializeResponseAt ? initializeResponseAt - startedAt : null;
+      result.fingerprint.timings.totalMs = result.durationMs;
       finalizeResult(result);
       if (child && !child.killed && child.exitCode === null) {
         endedByGuard = true;
@@ -428,6 +449,7 @@ export async function guardStdioServer(commandWithArgs, options = {}) {
 
       if (message.id === 1) {
         clearTimeout(timer);
+        initializeResponseAt = Date.now();
         if (!isJsonRpcResponse(message)) {
           addIssue('error', 'stdout-unexpected-request-id', 'stdout frame with id 1 is not an initialize response');
           finish();
@@ -545,6 +567,316 @@ export function classifyIssueCode(code) {
   return ISSUE_CLASS_BY_CODE.get(code) ?? ISSUE_CLASSES.MCP_PROTOCOL;
 }
 
+function createFingerprint(commandWithArgs, options = {}) {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const operation = options.operation || null;
+
+  return {
+    guard: {
+      name: 'mcp-stdio-guard',
+      version: VERSION
+    },
+    command: {
+      executable: commandWithArgs[0] || '',
+      args: redactArgv(commandWithArgs.slice(1)),
+      argv: redactArgv(commandWithArgs)
+    },
+    cwd: {
+      requested: String(options.cwd ?? process.cwd()),
+      resolved: cwd,
+      exists: fs.existsSync(cwd)
+    },
+    protocol: options.protocol ?? DEFAULT_PROTOCOL,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT,
+    repeat: options.repeat ?? 1,
+    operation: operation
+      ? {
+          method: operation.method,
+          hasParams: operation.params !== undefined
+        }
+      : null,
+    system: {
+      platform: process.platform,
+      arch: process.arch,
+      osRelease: os.release()
+    },
+    runtimes: detectRuntimeVersions(commandWithArgs),
+    package: detectPackageMetadata(commandWithArgs, cwd),
+    env: redactEnvMetadata(options.env ?? {}),
+    staticScan: defaultStaticScan(),
+    timings: {
+      startupMs: null,
+      totalMs: null
+    }
+  };
+}
+
+function redactEnvMetadata(env) {
+  const names = Object.keys(env).sort();
+  return {
+    inherited: true,
+    names,
+    values: Object.fromEntries(names.map((name) => [name, REDACTED]))
+  };
+}
+
+function redactArgv(argv) {
+  const redacted = [];
+  let redactNext = false;
+
+  for (const arg of argv) {
+    if (redactNext) {
+      redacted.push(REDACTED);
+      redactNext = false;
+      continue;
+    }
+
+    const secretAssignment = redactSecretAssignment(arg);
+    if (secretAssignment) {
+      redacted.push(secretAssignment);
+      continue;
+    }
+
+    redacted.push(arg);
+    if (isSecretFlag(arg)) {
+      redactNext = true;
+    }
+  }
+
+  return redacted;
+}
+
+function redactSecretAssignment(arg) {
+  const match = /^([^=\s]+)=(.*)$/.exec(arg);
+  if (!match) return '';
+
+  const [, name] = match;
+  return isSecretName(name) ? `${name}=${REDACTED}` : '';
+}
+
+function isSecretFlag(arg) {
+  if (!arg.startsWith('-')) return false;
+  const name = arg.replace(/^-+/, '').split(/[=\s]/)[0];
+  return isSecretName(name);
+}
+
+function isSecretName(name) {
+  return /(^|[-_])(api[-_]?key|auth|bearer|cookie|credential|password|passwd|private[-_]?key|pwd|secret|session|token)([-_]|$)/i.test(name);
+}
+
+function detectRuntimeVersions(commandWithArgs) {
+  const command = commandWithArgs[0] || '';
+  const base = path.basename(command).toLowerCase();
+  const runtimes = {
+    node: {
+      version: process.version,
+      role: isNodeCommand(command) ? 'guard-and-target' : 'guard'
+    }
+  };
+
+  if (isPythonCommand(command)) {
+    runtimes.python = executableVersion(command, ['--version']);
+  }
+
+  if (isNpmCommand(base) || isNpxCommand(base)) {
+    runtimes.npm = executableVersion('npm', ['--version']);
+  }
+
+  if (base === 'uv' || base === 'uvx') {
+    runtimes.uv = executableVersion(base === 'uvx' ? 'uv' : command, ['--version']);
+  }
+
+  if (base === 'docker') {
+    runtimes.docker = executableVersion(command, ['--version']);
+  }
+
+  return runtimes;
+}
+
+function executableVersion(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    timeout: 1000,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+  return {
+    command,
+    version: output.split(/\r?\n/)[0] || '',
+    available: !result.error
+  };
+}
+
+function detectPackageMetadata(commandWithArgs, cwd) {
+  const command = commandWithArgs[0] || '';
+  const args = commandWithArgs.slice(1);
+  const base = path.basename(command).toLowerCase();
+
+  if (isNpxCommand(base)) {
+    return packageFromSpec('npm', firstPackageSpec(args));
+  }
+
+  if (isNpmCommand(base)) {
+    const subcommand = args[0] || '';
+    if (subcommand === 'exec' || subcommand === 'x') {
+      return packageFromSpec('npm', firstPackageSpec(args.slice(1)));
+    }
+  }
+
+  if (base === 'uvx') {
+    return packageFromSpec('uv', firstPackageSpec(args));
+  }
+
+  if (base === 'docker') {
+    const image = dockerImageSpec(args);
+    return image ? { manager: 'docker', name: image, versionSpec: '' } : null;
+  }
+
+  if (isNodeCommand(command) && args[0]) {
+    return localPackageMetadata(path.resolve(cwd, args[0]));
+  }
+
+  return null;
+}
+
+function firstPackageSpec(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') continue;
+
+    if (arg.startsWith('--package=')) {
+      return arg.slice('--package='.length);
+    }
+
+    if (arg === '--package' || arg === '-p') {
+      return args[index + 1] || '';
+    }
+
+    if (arg.startsWith('-')) {
+      continue;
+    }
+
+    return arg;
+  }
+
+  return '';
+}
+
+function packageFromSpec(manager, spec) {
+  if (!spec) return null;
+  const parsed = parsePackageSpec(spec);
+  return {
+    manager,
+    name: parsed.name,
+    versionSpec: parsed.versionSpec
+  };
+}
+
+function parsePackageSpec(spec) {
+  if (spec.startsWith('@')) {
+    const versionAt = spec.indexOf('@', 1);
+    if (versionAt > -1) {
+      return {
+        name: spec.slice(0, versionAt),
+        versionSpec: spec.slice(versionAt + 1)
+      };
+    }
+    return { name: spec, versionSpec: '' };
+  }
+
+  const versionAt = spec.lastIndexOf('@');
+  if (versionAt > 0) {
+    return {
+      name: spec.slice(0, versionAt),
+      versionSpec: spec.slice(versionAt + 1)
+    };
+  }
+
+  return { name: spec, versionSpec: '' };
+}
+
+function dockerImageSpec(args) {
+  const runIndex = args.indexOf('run');
+  if (runIndex === -1) return '';
+  const optionsWithValues = new Set([
+    '-e',
+    '--env',
+    '-h',
+    '--hostname',
+    '-p',
+    '--publish',
+    '-u',
+    '--user',
+    '-v',
+    '--volume',
+    '-w',
+    '--workdir',
+    '--entrypoint',
+    '--name',
+    '--network',
+    '--platform'
+  ]);
+
+  for (let index = runIndex + 1; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') continue;
+    if (arg.startsWith('-')) {
+      const optionName = arg.split('=')[0];
+      if (optionsWithValues.has(optionName) && !arg.includes('=') && index + 1 < args.length) {
+        index += 1;
+      }
+      continue;
+    }
+    return arg;
+  }
+
+  return '';
+}
+
+function localPackageMetadata(entry) {
+  const packageJson = findNearestPackageJson(fs.existsSync(entry) && fs.statSync(entry).isDirectory() ? entry : path.dirname(entry));
+  if (!packageJson) return null;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(packageJson, 'utf8'));
+    return {
+      manager: 'local',
+      name: typeof parsed.name === 'string' ? parsed.name : '',
+      versionSpec: typeof parsed.version === 'string' ? parsed.version : ''
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findNearestPackageJson(start) {
+  let dir = path.resolve(start);
+  while (dir !== path.dirname(dir)) {
+    const candidate = path.join(dir, 'package.json');
+    if (fs.existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+  return '';
+}
+
+function isNodeCommand(command) {
+  const base = path.basename(command).toLowerCase();
+  return base === 'node' || base === 'node.exe' || command === process.execPath;
+}
+
+function isPythonCommand(command) {
+  const base = path.basename(command).toLowerCase();
+  return /^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/.test(base);
+}
+
+function isNpmCommand(base) {
+  return base === 'npm' || base === 'npm.cmd' || base === 'npm-cli.js';
+}
+
+function isNpxCommand(base) {
+  return base === 'npx' || base === 'npx.cmd';
+}
+
 function finalizeResult(result) {
   result.schemaVersion = JSON_SCHEMA_VERSION;
   result.staticScan ??= defaultStaticScan();
@@ -553,7 +885,23 @@ function finalizeResult(result) {
   result.ok = !result.issues.some((issue) => issue.severity === 'error');
   result.checks = buildChecks(result);
   result.issueClasses = buildIssueClasses(result.issues);
+  finalizeFingerprint(result);
   return result;
+}
+
+function finalizeFingerprint(result) {
+  if (!result.fingerprint) return;
+  result.fingerprint.timings ??= {};
+  result.fingerprint.timings.totalMs = result.durationMs ?? result.fingerprint.timings.totalMs ?? null;
+
+  if (Array.isArray(result.runs)) {
+    result.fingerprint.runs = result.runs.map((run) => ({
+      run: run.run,
+      ok: run.ok,
+      startupMs: run.fingerprint?.timings?.startupMs ?? null,
+      totalMs: run.durationMs ?? run.fingerprint?.timings?.totalMs ?? null
+    }));
+  }
 }
 
 function normalizeIssues(issues) {

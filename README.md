@@ -148,6 +148,7 @@ mcp-stdio-guard [options] -- <command> [args...]
 | `operation` | post-initialize request result, or `null` when `--request` was not used |
 | `checks` | badge-friendly per-class statuses |
 | `issueClasses` | registry-friendly summary grouped by `installRuntime`, `stdioTransport`, and `mcpProtocol` |
+| `fingerprint` | redacted reproducibility metadata for debugging registry and CI runs |
 | `issues` | machine-readable diagnostics with `class`, `severity`, `code`, and `message`; repeat mode also adds `run` |
 | `staticScan` | whether source scanning was enabled and whether findings fail the command |
 | `staticFindings` | source scan findings with file, line, and message |
@@ -171,12 +172,52 @@ Current issue-code mapping:
 | `stdioTransport` | `static-stdout-write`, `stdout-content-length-framing`, `stdout-empty-line`, `stdout-non-json`, `stdout-without-newline` |
 | `mcpProtocol` | `initialize-error`, `operation-error`, `response-id-type-mismatch`, `stdout-invalid-json-rpc`, `stdout-unexpected-request-id` |
 
+`fingerprint` helps explain why a result reproduced in one runner but not another. It includes the guard version, redacted command argv, cwd details, protocol, timeout, repeat count, requested operation, platform/arch, relevant runtime versions, package metadata when detectable, static-scan context, and startup/total duration. Environment variable values are always emitted as `<redacted>` and only explicitly provided env names are listed.
+
+Registry display flow:
+
+| Step | Use |
+| --- | --- |
+| 1 | Show `issueClasses` first so install/runtime, stdio transport, and MCP protocol failures stay distinct |
+| 2 | Use `fingerprint.command`, `fingerprint.cwd`, and `fingerprint.package` to show what was actually run |
+| 3 | Compare `fingerprint.system`, `fingerprint.runtimes`, and `fingerprint.timings` before marking a package broken |
+| 4 | Show `fingerprint.env.names` only when debugging; never ask users to paste secret values |
+
 Example:
 
 ```json
 {
   "schemaVersion": 1,
   "ok": true,
+  "fingerprint": {
+    "guard": { "name": "mcp-stdio-guard", "version": "0.2.0" },
+    "command": {
+      "executable": "node",
+      "args": ["./server.js"],
+      "argv": ["node", "./server.js"]
+    },
+    "cwd": {
+      "requested": "/repo/server",
+      "resolved": "/repo/server",
+      "exists": true
+    },
+    "protocol": "2025-11-25",
+    "timeoutMs": 5000,
+    "repeat": 1,
+    "operation": { "method": "tools/list", "hasParams": false },
+    "system": { "platform": "darwin", "arch": "arm64", "osRelease": "25.0.0" },
+    "runtimes": {
+      "node": { "version": "v24.0.0", "role": "guard-and-target" }
+    },
+    "package": null,
+    "env": {
+      "inherited": true,
+      "names": ["API_TOKEN"],
+      "values": { "API_TOKEN": "<redacted>" }
+    },
+    "staticScan": { "enabled": false, "path": "", "failOnFindings": false },
+    "timings": { "startupMs": 42, "totalMs": 96 }
+  },
   "issueClasses": {
     "installRuntime": { "status": "pass", "issueCodes": [] },
     "stdioTransport": { "status": "pass", "issueCodes": [] },
