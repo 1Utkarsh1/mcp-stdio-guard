@@ -186,6 +186,13 @@ Runtime issue codes remain backward-compatible. For finer registry display, runt
 
 `process` records the observed lifecycle even when the run passes. `outcome` is one of `starting`, `running`, `exited`, `timeout`, `spawn-failed`, or `guard-terminated`; `starting` is the transient initial value while the child is being created, not an expected terminal outcome. `phase` is `startup`, `initialize`, `operation`, or `post-initialize`. `exitCode` and `signal` are included when the process exits before the guard finishes; timeout runs include `timedOut`, `timeoutCode`, `timeoutMs`, and guard kill metadata. `spawnError` is either `null` or an object with `code` and `message`; the matching `spawn-failed` issue also exposes `spawnErrorCode`.
 
+Spawn failure shape:
+
+| Field | Shape |
+| --- | --- |
+| `process.spawnError` | `null` or `{ "code": "ENOENT", "message": "spawn missing-command ENOENT" }` |
+| `issues[].spawnErrorCode` | short platform error code such as `ENOENT`, or `""` when unavailable |
+
 `fingerprint` helps explain why a result reproduced in one runner but not another. It includes the guard version, redacted command argv, cwd details, protocol, timeout, repeat count, requested operation, platform/arch, relevant runtime versions, package metadata when detectable, static-scan context, and startup/total duration. Environment variable values are always emitted as `<redacted>` and only explicitly provided env names are listed.
 
 Registry display flow:
